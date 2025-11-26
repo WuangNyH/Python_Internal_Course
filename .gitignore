@@ -1,0 +1,94 @@
+# ---- Virtual Environments ----
+.venv/
+venv/
+ENV/
+env/
+
+# ---- Python cache / build ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+*.egg
+*.whl
+build/
+dist/
+pip-wheel-metadata/
+site/
+
+# ---- IDE / Editors ----
+.vscode/
+.vscode-test/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ---- OS / System files ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Environment / secrets ----
+.env
+.env.*
+*.secret
+*.token
+*.key
+*.pem
+*.crt
+*.cert
+
+# ---- Logs & Debug ----
+logs/
+*.log
+log/
+debug.log
+
+# ---- pytest / coverage ----
+.cache/
+.coverage
+.coverage.*
+htmlcov/
+pytest_cache/
+nosetests.xml
+coverage.xml
+test-results.xml
+
+# ---- MyPy / Type Checkers ----
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# ---- Jupyter ----
+.ipynb_checkpoints/
+*.ipynb
+
+# ---- Database & backups ----
+*.db
+*.sqlite
+*.sqlite3
+*.sql
+backup/
+backups/
+
+# ---- FastAPI / Uvicorn ----
+# (Uvicorn may create pid files)
+*.pid
+
+# ---- Docker ----
+/docker-data/
+/docker-volumes/
+/data/
+*.tar
+
+# ---- Temp & runtime files ----
+*.tmp
+*.temp
+tmp/
+temp/
+cache/
+runtime/
