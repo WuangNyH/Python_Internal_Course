@@ -1,9 +1,17 @@
+print("Hello", 123, True)
+
+print("A", "B", "C", sep="-")
+print("A", "B", "C", sep="")
+
+f = open("output.txt", "w")
+print("Hello", file=f)
+
 """
 Xếp loại học viên:
     Điểm < 5: Yếu
     Điểm >= 5: Khá
 """
-score = int(input("Nhập điểm: "))
+score = int(input("Nhập điểm (số nguyên dương): "))
 
 # Câu điều kiện thiếu
 if score < 5:
@@ -48,7 +56,18 @@ elif score < 5:
 else:
     print("Yếu")
 
-# Nested if
+
+# ===== Toán tử dùng trong if =====
+age = 20
+has_id_card = True
+
+if age >= 18 and has_id_card:
+    print("Được vào")
+else:
+    print("Không được vào")
+
+
+# ===== Nested if =====
 age = 20
 
 if age >= 18:
@@ -56,10 +75,11 @@ if age >= 18:
     if age >= 60:
         print("Đã đủ tuổi hưu")
 
-# Ternary Operator
+
+# ===== Ternary Operator =====
 status = "18+" if age >= 18 else "Chưa đủ tuổi"
 print("Tình trạng:", status)
 
 a, b = 10, 5
 max_value = a if a > b else b
-print("max_value=", max_value)
+print("max_value =", max_value)
