@@ -107,7 +107,7 @@ print(students[("Nguyen", "An")])  # 8.5
 
 # Nếu dùng list làm key sẽ bị lỗi
 key = ["Nguyen", "An"]
-# my_dict = {key: 8.5}  # TypeError: cannot use 'list' as a dict key (unhashable type: 'list')
+# my_dict = {key: 8.5} # TypeError: cannot use 'list' as a dict key (unhashable type: 'list')
 
 
 # ===== Một số hàm & thao tác thường dùng với tuple =====
@@ -126,3 +126,10 @@ for x in nums:
 # duyệt index + value
 for i, value in enumerate(nums):
     print(i, value)
+
+# duyệt tuple song song với zip()
+a = (1, 2, 3)
+b = ("A", "B", "C")
+
+for x, y in zip(a, b):
+    print(x, y)

@@ -64,6 +64,8 @@ nums = [4, 7, 1, 9]
 print(len(nums)) # số phần tử
 print(sorted(nums)) # trả về list mới đã sort
 
+nums.sort() # Sắp xếp tại chỗ
+print("sort tại chỗ:", nums)
 
 # ===== Duyệt list =====
 # Duyệt phần tử
@@ -77,6 +79,14 @@ for i in range(len(nums)):
 # Duyệt index + value bằng enumerate()
 for i, value in enumerate(nums, start=1):
     print(i, value)
+
+# Duyệt song song nhiều list bằng zip()
+students = ["A", "B", "C", "D"]
+math = [9.0, 7.5, 8.0]
+english = [8.5, 6.0, 9.0]
+
+for s, m, e in zip(students, math, english):
+    print(s, m, e)
 
 
 # ===== List comprehension =====

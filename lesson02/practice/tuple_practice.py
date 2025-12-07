@@ -44,7 +44,7 @@ scores = [score for _, _, score in students]
 print(f"Scores: {scores}")
 
 # c. Tìm học viên có điểm cao nhất, in ra `Top student: <name>, Score: <score>`
-# Dùng for tìm max
+# Cách 1: Dùng for tìm max
 top_student = students[0] # gán tạm cho tuple student đầu tiên
 
 for student in students:
@@ -53,11 +53,12 @@ for student in students:
 
 print(f"Top student: {top_student}")
 
-# Dùng hàm max() với tham số key
+# Cách 2: Dùng hàm max() với tham số key
 # students không phải là 1 list điểm gồm [8.5, 7.0, 9.0]
 # students là list[tuple[name, age, score]]
 # => python ko thể biết lấy max trên phần tử nào của tuple
-# dùng tham số key để truyền hàm get_score bằng lambda (lấy giá trị tuple[2] để tính max)
+# dùng tham số key: so sánh max trên giá trị nào của tuple, list, ...
+# => truyền hàm get_score bằng lambda cho key (lấy giá trị tuple[2] để so sánh max)
 def get_score(student: tuple[str, int, float]) -> float:
     return student[2]
 
@@ -69,4 +70,5 @@ top_student = max(students, key=lambda student: get_score(student))
 # Hoặc sử dụng hàm lambda ẩn danh (ko cần định nghĩa hàm get_score())
 # top_student = max(students, key=lambda student: student[2])
 
+# max() trả về phần tử gốc (ở đây là tuple)
 print(f"Top student: {top_student}")
