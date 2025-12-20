@@ -14,13 +14,14 @@ service = StudentService()
 
 @student_router.get("", response_model=SuccessResponse[list[StudentOut]])
 def list_students(
+        request: Request,
         offset: int = 0,
         limit: int = 100,
         db: Session = Depends(get_db),
 ) -> SuccessResponse[list[StudentOut]]:
     students = service.list_students(db, offset=offset, limit=limit)
     data = [StudentOut.model_validate(student) for student in students]
-    return SuccessResponse(data=data)
+    return SuccessResponse(data=data, trace_id=request.state.trace_id)
 
 
 @student_router.get(
@@ -29,11 +30,15 @@ def list_students(
     responses={404: {"model": ErrorResponse, "description": "Student not found"}},
 )
 def get_student(
+        request: Request,
         student_id: int,
         db: Session = Depends(get_db),
 ) -> SuccessResponse[StudentOut]:
     student = service.get_student(db, student_id)
-    return SuccessResponse(data=StudentOut.model_validate(student))
+    return SuccessResponse(
+        data=StudentOut.model_validate(student),
+        trace_id=request.state.trace_id,
+    )
 
 
 @student_router.get(
@@ -47,6 +52,7 @@ def get_student(
     }
 )
 def search_students(
+        request: Request,
         keyword: str | None = None,
         min_age: int | None = None,
         max_age: int | None = None,
@@ -63,7 +69,7 @@ def search_students(
         limit=limit,
     )
     data = [StudentOut.model_validate(s) for s in students]
-    return SuccessResponse(data=data)
+    return SuccessResponse(data=data, trace_id=request.state.trace_id)
 
 
 @student_router.post(
@@ -90,6 +96,7 @@ def create_student(
     return SuccessResponse(
         data=StudentOut.model_validate(student),
         message="Student created successfully",
+        trace_id=request.state.trace_id,
     )
 
 
@@ -102,6 +109,7 @@ def create_student(
     }
 )
 def update_student(
+        request: Request,
         student_id: int,
         data: StudentUpdate,
         db: Session = Depends(get_db),
@@ -110,6 +118,7 @@ def update_student(
     return SuccessResponse(
         data=StudentOut.model_validate(student),
         message="Student updated successfully",
+        trace_id=request.state.trace_id,
     )
 
 
@@ -119,8 +128,11 @@ def update_student(
     responses={404: {"model": ErrorResponse, "description": "Not found"}},
 )
 def delete_student(
+        request: Request,
+        response: Response,
         student_id: int,
         db: Session = Depends(get_db),
 ) -> None:
     service.delete_student(db, student_id)
+    response.headers["x-trace-id"] = request.state.trace_id
     return None
