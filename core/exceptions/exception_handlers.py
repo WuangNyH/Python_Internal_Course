@@ -5,7 +5,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from core.exceptions.base import BusinessException
-from schemas.response.error_response import ErrorResponse
+from schemas.response.base import ErrorResponse
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey
 
 from models.base import Base
-from models.TimeMixin import TimeMixin
+from models.time_mixin import TimeMixin
 
 
 class Task(TimeMixin, Base):

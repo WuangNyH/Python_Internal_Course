@@ -1,9 +1,0 @@
-from pydantic import BaseModel
-
-
-class ErrorResponse(BaseModel):
-    success: bool = False
-    error_code: str
-    message: str
-    trace_id: str | None = None
-    extra: dict | None = None

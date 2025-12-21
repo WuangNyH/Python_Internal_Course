@@ -7,8 +7,8 @@ from controllers.user_controller import user_router
 from core.app_logging import setup_logging
 from core.exceptions.base import BusinessException
 from core.exceptions.exception_handlers import business_exception_handler, unhandled_exception_handler
-from middlewares.db_session import DBSessionMiddleware
-from middlewares.trace_id import TraceIdMiddleware
+from core.middlewares.db_session import DBSessionMiddleware
+from core.middlewares.trace_id import TraceIdMiddleware
 
 app = FastAPI()
 

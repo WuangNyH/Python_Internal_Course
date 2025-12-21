@@ -1,11 +1,7 @@
-from pydantic import BaseModel, EmailStr, HttpUrl
+from pydantic import BaseModel, EmailStr
 
 
 class UserOut(BaseModel):
     id: int
-    name: str
-    age: int
-
-# class UserOut(BaseModel):
-#     email: EmailStr
-#     avatar_url: HttpUrl | None = None
+    email: EmailStr
+    is_active: bool

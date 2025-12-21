@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from dependencies.db import get_db
 from schemas.request.student_schema import StudentCreate, StudentUpdate
 from schemas.response.base import SuccessResponse
-from schemas.response.error_response import ErrorResponse
+from schemas.response.base import ErrorResponse
 from schemas.response.student_out_schema import StudentOut
 from services.student_service import StudentService
 

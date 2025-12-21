@@ -319,7 +319,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from core.exceptions.base import BusinessException
-from schemas.response.error_response import ErrorResponse
+from schemas.response.base import ErrorResponse
 
 
 async def business_exception_handler(
@@ -540,4 +540,1068 @@ Quy tắc log cần nhớ:
 
 ---
 
-## 2) 
+## 2) Authentication & Authorization (JWT)
+
+### 2.1 Khái niệm
+
+#### 2.1.1 Authentication (Authen)
+
+Xác định người dùng là ai:
+
+* Kết quả: một identity (`user_id`, `tenant_id`, `roles`/`scopes` ...)
+
+#### 2.1.2 Authorization (Author)
+
+Kiểm tra người dùng được quyền làm gì trên tài nguyên nào:
+
+* Kết quả: `allow`/`deny` (RBAC/ABAC), kèm policy và audit
+
+#### 2.1.3 Phân biệt 401 vs 403
+
+* `401 Unauthorized`: thiếu token / token sai / token hết hạn 
+* `403 Forbidden`: token hợp lệ nhưng không đủ quyền
+
+> 401 = “chưa đăng nhập đúng” <br>
+> 403 = “đăng nhập rồi nhưng không có quyền”
+
+---
+
+### 2.2 JWT (JSON Web Token)
+
+JWT gồm 3 phần: Header – Payload (Claims) – Signature
+
+#### 2.2.1 Access token vs Refresh token
+
+* Access token: sống ngắn (5–15 phút)
+* Refresh token: sống dài (7–30 ngày hoặc hơn) để cấp lại access token
+
+#### 2.2.2 Thông tin xác thực (claims) tối thiểu
+
+Trong access token cần có thông tin (pattern chuẩn enterprise):
+
+* `sub` (Subject): Đại diện cho danh tính chính của token, luôn map với `user_id` (field bắt buộc)
+* `exp` (Expiration Time): thời hạn token
+* `iat` (Issued At): thời điểm token được tạo
+* (tùy dự án có/ko) `iss`, `aud`
+  * `iss` (Issuer): ai phát hành token, ví dụ:
+    * Token từ Google => `iss = https://accounts.google.com`
+    * Token nội bộ => `iss = auth-service`
+  * `aud` (Audience): token dành cho service nào
+    * Mỗi service chỉ accept token có `aud` phù hợp, ví dụ auth server cấp token cho:
+      * `student-api`
+      * `order-api`
+* `roles` hoặc `permissions`/`scopes`
+  * `roles`: Role-based Authorization (RBAC)
+  * `permissions`/`scopes`: Permission-based Authorization
+* `tid` (`tenant_id`): Xác định user thuộc tổ chức nào
+
+Mẫu JWT chuẩn:
+
+```json
+{
+  "sub": "123",
+  "iat": 1712340000,
+  "exp": 1712340900,
+  "iss": "https://auth.mycompany.com",
+  "aud": "student-api",
+  "roles": ["teacher"],
+  "permissions": ["student:read", "student:write"],
+  "tid": "company_001"
+}
+```
+
+---
+
+### 2.3 Kiến trúc chuẩn tách lớp
+
+#### A) Edge / API Layer
+
+* Router chỉ khai báo endpoint cần gì
+* Dùng dependency để:
+  * lấy `CurrentUser`
+  * check permission/policy
+* Không nhúng logic JWT/role trực tiếp trong router
+
+#### B) Auth Module (Security Layer)
+
+* Token verification (JWT)
+* Load user (từ DB/cache)
+* Build Principal / CurrentUser
+* Expose dependency: `get_current_user()`
+
+#### C) Authorization Module (Policy Layer)
+
+* RBAC: role-based (`admin`, `teacher`, `viewer`)
+* ABAC: attribute-based (owner check, tenant check, resource state)
+* Expose dependency: `require_permission("student:write")` hoặc `authorize(policy, resource)`
+
+#### D) Domain/Service Layer
+
+* Service vẫn có thể thêm business authorization nếu cần (khi rule nghiệp vụ phức tạp)
+* Thường policy check ở API layer để fail fast
+
+---
+
+### 2.4 Các loại token phổ biến
+
+#### Option 1 (phổ biến nhất): OAuth2 + JWT Access Token
+
+* Access token ngắn hạn (5–15 phút)
+* Refresh token dài hạn (7–30 ngày)
+* Chuẩn enterprise:
+  * dễ rotate keys
+  * dễ tích hợp SSO (Single Sign-On: đăng nhập một lần, truy cập được nhiều hệ thống khác nhau mà không cần đăng nhập lại)
+  * microservice-friendly
+
+#### Option 2: Session (cookie-based)
+
+* Phù hợp hệ thống web truyền thống (SSR)
+* Nhưng khó scale cho mobile/microservices nếu không có shared store
+
+> Với FastAPI backend kiểu API, thường chọn Access JWT + Refresh
+
+---
+
+### 2.5 Authorization chuẩn: kết hợp RBAC + ABAC
+
+#### 2.5.1 RBAC (role)
+
+* admin: full
+* staff: write
+* viewer: read
+
+#### 2.5.2 ABAC (attribute)
+
+* “Owner can update own profile”
+* “User chỉ xem dữ liệu trong tenant của mình”
+* “Chỉ sửa student thuộc lớp mình quản lý”
+
+> Patter enterprise thường dùng: <br>
+> * RBAC để coarse-grained: quyền ở mức thô, rộng => “Role này có được phép vào API / chức năng này không?”
+> * ABAC để fine-grained: quyền chi tiết, theo ngữ cảnh => “Trong điều kiện hiện tại, người này có được phép không?”
+
+#### 2.5.3 Ví dụ kết hợp RBAC + ABAC
+
+> Bài toán thực tế: Ai được sửa thông tin student?
+
+RBAC (coarse)
+
+```text
+admin, teacher => được vào API update student
+user => bị chặn
+```
+
+ABAC (fine)
+
+```text
+teacher chỉ được sửa student do mình phụ trách
+admin sửa tất cả
+```
+
+Logic minh họa
+
+```python
+# RBAC (coarse)
+if user.role not in ["admin", "teacher"]:
+    deny()
+
+# ABAC (fine)
+if user.role == "teacher" and student.teacher_id != user.id:
+    deny()
+```
+
+---
+
+### 2.6 Triển khai Authen/Author trong FastAPI
+
+#### 2.6.1 Dependency: `get_current_user()`
+
+* Parse `Authorization: Bearer <token>`
+* Verify token + exp + aud/iss
+* Load user từ DB/cache (đảm bảo user chưa bị disable)
+* Trả về `CurrentUser` (principal)
+
+#### 2.6.2 Dependency: `require_permissions([...])`
+
+* Nhận `CurrentUser`
+* Check permission/role
+* Nếu fail: raise `ForbiddenException`
+
+#### 2.6.3 Pattern exception chuẩn
+
+* `UnauthorizedException` (401): thiếu/invalid token
+* `ForbiddenException` (403): token OK nhưng không đủ quyền
+* `InvalidTokenException` (401)
+* `TokenExpiredException` (401)
+
+=> Tất cả kế thừa `BusinessException` để đi qua exception handler
+
+---
+
+### 2.7 Các hạng mục Security
+
+* Password hashing: bcrypt/argon2 (không bao giờ lưu plain text)
+* Refresh token:
+  * store hashed refresh token (hoặc token id)
+  * revoke/rotate khi refresh
+* Rate limit login
+* Audit log (ít nhất cho: login fail, permission denied)
+* CORS policy rõ ràng
+* HTTPS bắt buộc (môi trường PROD)
+* “Least privilege” cho permissions
+  * không cấp dư
+  * không cho tiện
+  * không “để sau sửa”
+
+---
+
+### 2.8 Kiến trúc Hybrid (Middleware + Depends)
+
+#### 2.8.1 Mục đích của Hybrid
+
+* **Middleware**: chạy cho mọi request, làm việc cross-cutting cho toàn requests
+  * tạo `trace_id`
+  * parse token (nếu có) => gắn `claims` vào `request.state`
+  * không query DB, không check quyền, không chặn request (hoặc chỉ chặn rất hạn chế)
+* **Depends**: enforce chặn theo từng route
+  * `get_current_user()` => `401` nếu thiếu/invalid token, có thể load user DB
+  * `require_permissions(...)` => `403` nếu thiếu quyền
+  * hỗ trợ ABAC (owner/tenant/resource)
+
+#### 2.8.2 Sơ đồ luồng xử lý
+
+```
+Client (request)
+  ↓
+[TraceIdMiddleware]  -> request.state.trace_id
+  ↓
+[TokenContextMiddleware] -> request.state.token_claims
+  - đọc token nếu có
+  - verify chữ ký + decode claims
+  - request.state.token_claims = claims | None
+  ↓
+Router (FastAPI)
+  ↓
+Depends:
+  - get_current_user() -> 401 nếu thiếu/invalid token, (optional) load user DB
+  - require_permissions(...) -> RBAC/ABAC check -> 403 nếu thiếu quyền
+  ↓
+Service (business logic) -> raise BusinessException
+  ↓
+Exception Handlers -> ErrorResponse + trace_id
+  ↓
+Response (body + X-Trace-Id header)
+```
+
+#### 2.8.3 TokenContextMiddleware (chỉ parse token, không enforce)
+
+Trách nhiệm:
+* đọc token từ header/cookie
+* verify chữ ký, decode claims
+* set `request.state.token_claims = claims | None`
+
+Không làm:
+* không query DB
+* không check permission
+* không quyết định `401`/`403` cho mọi route
+
+---
+
+### 2.9 Code triển khai
+
+#### 2.9.1 Data model cho RBAC
+
+Bảng cần thiết:
+* `users`
+* `roles`
+* `permissions`
+* `user_roles` (N-N)
+* `role_permissions` (N-N)
+
+SQLAlchemy models:
+
+```python
+# models/associations.py
+from sqlalchemy import Table, Column, ForeignKey, UniqueConstraint
+
+from models.base import Base
+
+# Base.metadata dùng để khai báo table thuần
+user_roles = Table(
+    "user_roles",
+    Base.metadata,
+    Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("role_id", ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True),
+    UniqueConstraint("user_id", "role_id", name="uq_user_role"),
+)
+
+role_permissions = Table(
+    "role_permissions",
+    Base.metadata,
+    Column("role_id", ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True),
+    Column("permission_id", ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True),
+    UniqueConstraint("role_id", "permission_id", name="uq_role_permission"),
+)
+```
+
+```python
+# models/role.py
+from typing import TYPE_CHECKING
+
+from sqlalchemy import String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from models.base import Base
+from models.associations import user_roles, role_permissions
+from models.time_mixin import TimeMixin
+
+if TYPE_CHECKING:
+    from models.user import User
+    from models.permission import Permission
+
+
+class Role(TimeMixin, Base):
+    __tablename__ = "roles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+
+    users: Mapped[list[User]] = relationship(
+        secondary=user_roles,
+        back_populates="roles",
+        lazy="selectin",
+    )
+
+    permissions: Mapped[list[Permission]] = relationship(
+        secondary=role_permissions,
+        back_populates="roles",
+        lazy="selectin",
+    )
+```
+
+```python
+# models/user.py
+from typing import TYPE_CHECKING
+
+from sqlalchemy import String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from models.base import Base
+from models.associations import user_roles
+from models.time_mixin import TimeMixin
+
+if TYPE_CHECKING:
+    from models.role import Role
+
+
+class User(TimeMixin, Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    hashed_password: Mapped[str] = mapped_column(nullable=False)
+    is_active: Mapped[bool] = mapped_column(nullable=False, default=False)
+    token_version: Mapped[int] = mapped_column(nullable=False, default=1)
+
+    roles: Mapped[list[Role]] = relationship(
+        secondary=user_roles,
+        back_populates="users",
+        lazy="selectin",
+    )
+```
+
+```python
+# models/permission.py
+from typing import TYPE_CHECKING
+
+from sqlalchemy import String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from models.base import Base
+from models.associations import role_permissions
+from models.time_mixin import TimeMixin
+
+if TYPE_CHECKING:
+    from models.role import Role
+
+
+class Permission(TimeMixin, Base):
+    __tablename__ = "permissions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+
+    roles: Mapped[list[Role]] = relationship(
+        secondary=role_permissions,
+        back_populates="permissions",
+        lazy="selectin",
+    )
+```
+
+Giải thích chi tiết:
+* Cần import trong `if TYPE_CHECKING` để tránh circular import:
+  * `TYPE_CHECKING`: hằng số đặc biệt trong module typing
+    * Compile time (IDE/Type checker): `TYPE_CHECKING=True`
+    * Run time (Python runtime): `TYPE_CHECKING=False`
+  * Chỉ import model quan hệ ở compile time => giúp IDE hiểu kiểu dữ liệu của model quan hệ (ví dụ `Role`) 
+  * Ko import model quan hệ khi Python chạy chương trình thật => tránh lỗi import vòng lặp 
+* `users: Mapped[list[User]] = relationship(...)`: Một Role có thể được gán cho NHIỀU User
+  * Quan hệ N–N giữa `User` và `Role` => `role.users`: list tất cả user đang có role này
+  * `relationship(...)`: ko tạo cột mới trong DB, chỉ dùng để liên kết các bảng lại với nhau trong code => cho phép viết `role.users`, `user.roles`
+    * `secondary=user_roles`: `User` và `Role` ko nối trực tiếp với nhau, mà nối qua bảng trung gian `user_roles`
+    * `back_populates="roles"`: tạo liên kết 2 chiều giữa 2 model
+      * Bên `Role`: `role.users`
+      * Bên `User` (phải có): `user.roles`
+    * `lazy="selectin"`: cách dữ liệu được load từ DB (giúp tránh N+1 problem)
+      * SQLAlchemy sẽ load Role trước
+      * Khi cần users sẽ chạy 1 query bổ sung cho tất cả role
+      * Nếu ko có `lazy="selectin"`: 
+        * Khi truy cập `role.users`
+        * SQLAlchemy có thể chạy thêm nhiều query lặp => N+1 problem
+
+Tạo thêm model cho refresh_token:
+
+```python
+# models/refresh_session.py
+from datetime import datetime
+
+from sqlalchemy import (
+    ForeignKey,
+    String,
+    DateTime,
+    Index,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from models.base import Base
+from models.time_mixin import TimeMixin
+
+
+class RefreshSession(TimeMixin, Base):
+    __tablename__ = "refresh_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # ---- Token storage (hash only) ----
+    token_hash: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        unique=True,
+        comment="Hashed refresh token (never store plain token)",
+    )
+
+    # ---- Lifecycle ----
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    rotated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # ---- Metadata (optional but enterprise-friendly) ----
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
+
+    # ---- Relationship ----
+    user = relationship("User", lazy="joined")
+
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_refresh_sessions_token_hash"),
+        Index("ix_refresh_sessions_user_active", "user_id", "revoked_at"),
+    )
+```
+
+---
+
+#### 2.9.2 Password Hashing
+
+Cài thư viện `bcrypt`:
+
+```bash
+    pip install passlib[bcrypt]
+```
+
+Tạo Password utility:
+
+```python
+# security/password.py
+from passlib.context import CryptContext
+
+_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def hash_password(plain_password: str) -> str:
+    if not plain_password or plain_password.strip() == "":
+        raise ValueError("Password must not be empty")  # Tầng service sẽ xử lý
+    return _pwd_context.hash(plain_password)
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    if not plain_password or not hashed_password:
+        return False
+    return _pwd_context.verify(plain_password, hashed_password)
+
+
+def needs_rehash(hashed_password: str) -> bool:
+    if not hashed_password:
+        return False
+    return _pwd_context.needs_update(hashed_password)
+```
+
+Giải thích chi tiết:
+* `CryptContext(schemes=["bcrypt"], deprecated="auto")`: khởi tạo context
+  * `schemes=["bcrypt"]`: dùng thuật toán hash chuyên cho password, gồm các thành phần:
+    * auto salt: mỗi password tự sinh salt => không trùng
+    * adaptive cost: có thể tăng độ khó theo thời gian
+  * `deprecated="auto"`: cho phép đánh dấu hash cũ là không an toàn
+* `.verify(plain_password, hashed_password)`: so sánh password user nhập và password đã hash trong DB
+* `needs_rehash(hashed_password: str)`: tư duy chuẩn enterprise
+  * Hệ thống tự nâng cấp bảo mật (ví dụ hiện tại `bcrypt cost = 10` lên `cost = 12`)
+  * Đáp ứng được yêu cầu "ko thể bắt user đổi password hàng loạt"
+    ```python
+        if verify_password(password, user.hashed_password):
+            if needs_rehash(user.hashed_password):
+                user.hashed_password = hash_password(password)
+                db.commit()
+    ```
+
+---
+
+#### 2.9.3 Schemas cho login
+
+```python
+# schemas/request/login_schema.py
+from pydantic import BaseModel, EmailStr, Field
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=128)
+```
+
+```python
+# schemas/response/login_out_schema.py
+from pydantic import BaseModel
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int  # seconds
+```
+
+> Pattern chuẩn cho Web App <br>
+> * `access_token`: trả luôn trong body => giúp client toàn quyền quản lý `access_token`
+> * `refresh_token`: ko trả trong body, set vào cookie => tránh bị đánh cắp `refresh_token`
+> * Login trả token, không trả full user profile
+>   * Lấy profile thì gọi endpoint `/me`
+
+---
+
+#### 2.9.4 AuthRepository & RefreshSessionRepository
+
+AuthRepository: query user + snapshot roles/permissions
+
+```python
+# repositories/auth_repository.py
+from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import select
+
+from models.user import User
+from models.role import Role
+
+
+class AuthRepository:
+    def get_user_credentials_by_email(self, db: Session, email: str) -> User | None:
+        stmt = select(User).where(User.email == email)
+        return db.execute(stmt).scalars().first()
+
+    def get_authz_snapshot(self, db: Session, user_id: int) -> tuple[list[str], list[str], int]:
+        stmt = (
+            select(User)
+            .where(User.id == user_id)
+            .options(
+                selectinload(User.roles).selectinload(Role.permissions)
+            )
+        )
+        user = db.execute(stmt).scalars().first()
+        if not user:
+            # Service sẽ quyết định raise gì
+            return [], [], 0
+
+        roles = [r.name for r in user.roles]
+        permissions = sorted({p.code for r in user.roles for p in r.permissions})
+        token_version = getattr(user, "token_version", 1)
+        return roles, permissions, token_version
+```
+
+RefreshSessionRepository: thao tác với bảng `refresh_sessions`
+
+```python
+# repositories/refresh_session_repository.py
+from datetime import datetime, timezone
+from typing import Final
+
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session
+
+from models.refresh_session import RefreshSession
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class RefreshSessionRepository:
+    MODEL: Final = RefreshSession
+
+    # Create / Issue
+    def create_session(
+            self,
+            db: Session,
+            *,
+            user_id: int,
+            token_hash: str,
+            expires_at: datetime,
+            user_agent: str | None = None,
+            ip_address: str | None = None,
+            now: datetime | None = None,
+    ) -> RefreshSession:
+        now = now or _utcnow()
+
+        session = RefreshSession(
+            user_id=user_id,
+            token_hash=token_hash,
+            expires_at=expires_at,
+            user_agent=user_agent,
+            ip_address=ip_address,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(session)
+        db.flush()  # lấy session.id ngay trong transaction
+        return session
+
+    # Read / Validate
+    def get_active_by_token_hash(
+            self,
+            db: Session,
+            *,
+            token_hash: str,
+            now: datetime | None = None,
+            for_update: bool = False,
+    ) -> RefreshSession | None:
+        """
+        Lấy refresh session còn hiệu lực:
+        - token_hash match
+        - revoked_at is NULL
+        - expires_at > now
+
+        for_update=True dùng cho flow refresh/rotate để tránh race-condition
+        """
+        now = now or _utcnow()
+
+        stmt = (
+            select(RefreshSession)
+            .where(
+                RefreshSession.token_hash == token_hash,
+                RefreshSession.revoked_at.is_(None),
+                RefreshSession.expires_at > now,
+            )
+        )
+
+        if for_update:
+            stmt = stmt.with_for_update()
+
+        return db.execute(stmt).scalars().first()
+
+    # Rotate
+    def rotate_session(
+            self,
+            db: Session,
+            *,
+            old_token_hash: str,
+            new_token_hash: str,
+            new_expires_at: datetime,
+            now: datetime | None = None,
+    ) -> RefreshSession | None:
+        """
+        Rotate refresh token theo pattern enterprise:
+        - Lock row theo old_token_hash (FOR UPDATE) để tránh concurrent refresh
+        - Nếu session không còn active -> return None
+        - Update token_hash + expires_at + rotated_at + updated_at
+
+        Lưu ý: rotate theo kiểu "update-in-place" (1 row)
+        Do token_hash unique, new_token_hash phải chưa tồn tại
+        """
+        now = now or _utcnow()
+
+        # Lock & validate session
+        current = self.get_active_by_token_hash(
+            db,
+            token_hash=old_token_hash,
+            now=now,
+            for_update=True,
+        )
+        if not current:
+            return None
+
+        # Update tại chỗ
+        current.token_hash = new_token_hash
+        current.expires_at = new_expires_at
+        current.rotated_at = now
+        current.updated_at = now
+
+        db.flush()
+        return current
+
+    # Revoke
+    def revoke_by_token_hash(
+            self,
+            db: Session,
+            *,
+            token_hash: str,
+            now: datetime | None = None,
+    ) -> bool:
+        """
+        Revoke 1 session theo token_hash
+        """
+        now = now or _utcnow()
+
+        session = self.get_active_by_token_hash(
+            db,
+            token_hash=token_hash,
+            now=now,
+            for_update=True,
+        )
+        if not session:
+            return False
+
+        session.revoked_at = now
+        session.updated_at = now
+        db.flush()
+        return True
+
+    def revoke_all_for_user(
+            self,
+            db: Session,
+            *,
+            user_id: int,
+            now: datetime | None = None,
+    ) -> int:
+        """
+        Revoke tất cả session của 1 user (logout all devices)
+        Return: số session bị revoke
+        """
+        now = now or _utcnow()
+
+        stmt = (
+            select(RefreshSession)
+            .where(
+                RefreshSession.user_id == user_id,
+                RefreshSession.revoked_at.is_(None),
+            )
+            .with_for_update()
+        )
+
+        sessions = db.execute(stmt).scalars().all()
+        if not sessions:
+            return 0
+
+        for s in sessions:
+            s.revoked_at = now
+            s.updated_at = now
+
+        db.flush()
+        return len(sessions)
+
+    # Cleanup
+    def delete_expired_sessions(
+            self,
+            db: Session,
+            *,
+            before: datetime | None = None,
+    ) -> int:
+        """
+        Dọn dẹp session hết hạn (enterprise chạy cron/job)
+        Return: số session bị xóa
+        """
+        before = before or _utcnow()
+
+        # Lấy danh sách id cần xóa
+        id_stmt = select(RefreshSession.id).where(RefreshSession.expires_at <= before)
+        ids = db.execute(id_stmt).scalars().all()
+        if not ids:
+            return 0
+
+        # Xóa theo ids (an toàn, không phụ thuộc rowcount)
+        del_stmt = delete(RefreshSession).where(RefreshSession.id.in_(ids))
+        db.execute(del_stmt)
+
+        return len(ids)
+```
+
+---
+
+#### 2.9.5 JWT service (verify/decode)
+
+Cài đặt thư viện JWT: có 2 thư viện phổ biến `python-jose` / `PyJWT`
+* Hiện tại `python-jose` được sử dụng gần như mặc định cho FastAPI vì có nhiều tính năng ưu việt hơn
+
+```bash
+    pip install "python-jose[cryptography]"
+```
+
+Tạo JWT service (Access token only):
+
+```python
+# security/jwt_service.py
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from jose import jwt
+from jose.exceptions import ExpiredSignatureError, JWTError
+
+from configs.env import settings_config
+
+_settings = settings_config()
+
+JWT_ALGORITHM = _settings.jwt_algorithm
+JWT_SECRET_KEY = _settings.jwt_secret_key
+JWT_ISSUER = _settings.jwt_issuer
+JWT_AUDIENCE = _settings.jwt_audience
+
+
+def create_access_token(
+    *,
+    subject: str,
+    permissions: list[str],
+    roles: list[str] | None = None,
+    expires_minutes: int = 15,
+    extra_claims: dict[str, Any] | None = None,
+) -> str:
+    now = datetime.now(timezone.utc)
+    payload: dict[str, Any] = {
+        "sub": subject,
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(minutes=expires_minutes)).timestamp()),
+        "permissions": permissions,
+        "roles": roles or [],
+    }
+    if extra_claims:
+        payload.update(extra_claims)
+
+    return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+
+def decode_access_token(token: str) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        claims = jwt.decode(
+            token,
+            JWT_SECRET_KEY,
+            algorithms=[JWT_ALGORITHM],
+            audience=JWT_AUDIENCE,
+            issuer=JWT_ISSUER,
+            options={"require_aud": True, "require_iss": True},
+        )
+        return claims, None
+    except ExpiredSignatureError:
+        return None, "expired"
+    except JWTError:
+        return None, "invalid"
+```
+
+**Lưu ý**: Đối với các dòng dự án cần bảo mật cao => thường dùng RS256 + JWKS
+
+---
+
+#### 2.9.6 Quản lý Refresh token
+
+Util tạo token + hash:
+
+```python
+# security/refresh_token.py
+import secrets
+import hashlib
+
+def generate_refresh_token() -> str:
+    # 43~86 chars: đủ mạnh
+    return secrets.token_urlsafe(64)
+
+def hash_refresh_token(token: str) -> str:
+    # DB chỉ lưu hash (che dấu token)
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+```
+
+Chuẩn hoá set cookie:
+
+```python
+# security/cookie_policy.py
+from typing import Literal
+
+from fastapi import Response
+
+SameSite = Literal["lax", "strict", "none"]
+
+
+class RefreshCookiePolicy:
+    def __init__(
+            self,
+            *,
+            name: str = "refresh_token",
+            path: str = "/api/v1/auth/refresh",
+            secure: bool = True,
+            samesite: SameSite = "strict",
+            max_age_seconds: int = 60 * 60 * 24 * 14,
+    ):
+        self.name = name
+        self.path = path
+        self.secure = secure
+        self.samesite: SameSite = samesite
+        self.max_age_seconds = max_age_seconds
+
+    def set(self, response: Response, token: str) -> None:
+        response.set_cookie(
+            key=self.name,
+            value=token,
+            httponly=True,
+            secure=self.secure,
+            samesite=self.samesite,
+            max_age=self.max_age_seconds,
+            path=self.path,
+        )
+
+    def clear(self, response: Response) -> None:
+        response.delete_cookie(key=self.name, path=self.path)
+```
+
+---
+
+#### 2.9.7 TokenContextMiddleware
+
+TokenContextMiddleware chỉ parse token nhẹ, ko query DB, ko chặn request (enforce là việc của security dependencies):
+
+```python
+# core/middlewares/token_context.py
+from fastapi import Request
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from security.jwt_service import decode_access_token
+
+
+class TokenContextMiddleware(BaseHTTPMiddleware):
+    """
+    Parse token nhẹ:
+    - Nếu có token: verify + decode claims -> request.state.token_claims
+    - Nếu token lỗi: request.state.token_error = "expired" | "invalid"
+    - Không raise 401/403 tại middleware
+    - Không query DB
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        request.state.token_claims = None
+        request.state.token_error = None
+
+        token = _extract_token(request)
+        if token:
+            claims, err = decode_access_token(token)
+            request.state.token_claims = claims
+            request.state.token_error = err  # None | "expired" | "invalid"
+
+        return await call_next(request)
+
+
+def _extract_token(request: Request) -> str | None:
+    # Authorization: Bearer <token>
+    auth = request.headers.get("Authorization")
+    if auth and auth.startswith("Bearer "):
+        return auth.removeprefix("Bearer ").strip()
+
+    # Cookie fallback
+    token = request.cookies.get("access_token")
+    return token
+```
+
+---
+
+#### 2.9.8 CurrentUser model (Principal)
+
+`CurrentUser` không phải là bản sao `User`, nó là principal (danh tính) tối thiểu đủ để:
+* authorize
+* audit
+* token invalidation check
+
+```python
+# security/principals.py
+from __future__ import annotations
+
+from typing import Any
+from pydantic import BaseModel, Field, ConfigDict
+
+
+class CurrentUser(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    user_id: int
+    roles: list[str] = Field(default_factory=list)
+    permissions: set[str] = Field(default_factory=set)
+
+    token_version: int = 1
+    tenant_id: str | None = None
+
+    @classmethod
+    def from_claims(cls, claims: dict[str, Any]) -> "CurrentUser":
+        # sub thường là string -> convert
+        sub = claims.get("sub")
+        roles = claims.get("roles") or []
+        perms = claims.get("permissions") or []
+        tv = claims.get("tv") or claims.get("token_version") or 1
+
+        return cls(
+            user_id=int(sub),
+            roles=list(roles),
+            permissions=set(perms),
+            token_version=int(tv),
+            tenant_id=claims.get("tid"),
+        )
+```
+
+Public schema `UserOut` phải khác `User` ORM:
+
+```python
+# schemas/response/user_out_schema.py
+from pydantic import BaseModel, EmailStr
+
+
+class UserOut(BaseModel):
+    id: int
+    email: EmailStr
+    is_active: bool
+```
+
+---
+
+#### 2.9.9 Depends: get_current_user + optional_user
+
+```python
+# security/dependencies.py
+
+```
+
