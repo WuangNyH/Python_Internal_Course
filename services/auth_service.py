@@ -48,13 +48,13 @@ class AuthService:
     """
 
     def __init__(
-        self,
-        *,
-        auth_repo: AuthRepository,
-        refresh_repo: RefreshSessionRepository,
-        cookie_policy: RefreshCookiePolicy,
-        security_settings: SecuritySettings,
-        jwt_service: JwtService,
+            self,
+            *,
+            auth_repo: AuthRepository,
+            refresh_repo: RefreshSessionRepository,
+            cookie_policy: RefreshCookiePolicy,
+            security_settings: SecuritySettings,
+            jwt_service: JwtService,
     ):
         self.auth_repo = auth_repo
         self.refresh_repo = refresh_repo
@@ -62,61 +62,53 @@ class AuthService:
         self.security_settings = security_settings
         self.jwt_service = jwt_service
 
-        # Fail-fast: env.py đã map security.jwt; ở runtime nên luôn có
         if self.security_settings.jwt is None:
             raise RuntimeError("SecuritySettings.jwt is not configured")
 
         self._access_ttl_minutes = int(self.security_settings.jwt.access_token_ttl_minutes)
         self._refresh_ttl_minutes = int(self.security_settings.refresh_session.ttl_minutes)
 
-    # -------------------------
-    # Login
-    # -------------------------
     def login(
-        self,
-        db: Session,
-        *,
-        request: Request,
-        response: Response,
-        email: str,
-        password: str,
+            self,
+            db: Session,
+            *,
+            request: Request,
+            response: Response,
+            email: str,
+            password: str,
     ) -> TokenPairOut:
         """
-        1) Load user credentials by email
-        2) Verify password
-        3) Load authz snapshot (roles, permissions, token_version)
-        4) Issue access token (JWT)
-        5) Issue refresh token (opaque) + store hashed session + set cookie
+        Execute:
+        - Load user credentials by email
+        - Verify password
+        - Load authz snapshot (roles, permissions, token_version)
+        - Issue access token (JWT)
+        - Issue refresh token (opaque) + store hashed session + set cookie
         """
         user = self.auth_repo.get_user_credentials_by_email(db, email)
 
-        # Enterprise: không tiết lộ email tồn tại hay không
         if not user:
             raise InvalidTokenException(token_type="access", reason="invalid_credentials")
 
-        # Nếu có cờ is_active
         if hasattr(user, "is_active") and not getattr(user, "is_active"):
             raise UserNotFoundOrDisabledException(getattr(user, "id", None))
 
-        # Verify password
         if not verify_password(password, getattr(user, "hashed_password", "")):
             raise InvalidTokenException(token_type="access", reason="invalid_credentials")
 
         user_id = int(getattr(user, "id"))
 
-        roles, permissions, token_version = self.auth_repo.get_authz_snapshot(db, user_id)
+        _, _, token_version = self.auth_repo.get_authz_snapshot(db, user_id)
         if not token_version:
             raise UserNotFoundOrDisabledException(user_id)
 
-        # Issue access token (tv được set qua token_version)
+        # Phát hành access token
         access_token = self.jwt_service.create_access_token(
             subject=str(user_id),
-            roles=roles,
-            permissions=permissions,
             token_version=int(token_version),
         )
 
-        # Issue refresh token (opaque) + store hashed session
+        # Phát hành refresh token (opaque) + lưu hash ở DB
         refresh_plain = generate_refresh_token()
         refresh_hash = hash_refresh_token(refresh_plain)
         refresh_expires_at = _ttl_minutes_to_expires_at(self._refresh_ttl_minutes)
@@ -139,22 +131,20 @@ class AuthService:
             expires_in=self._access_ttl_minutes * 60,
         )
 
-    # -------------------------
-    # Refresh
-    # -------------------------
     def refresh(
-        self,
-        db: Session,
-        *,
-        request: Request,
-        response: Response,
+            self,
+            db: Session,
+            *,
+            request: Request,
+            response: Response,
     ) -> TokenPairOut:
         """
-        1) Read refresh token from cookie
-        2) Hash -> rotate refresh session (atomic)
-        3) Load authz snapshot (roles, permissions, token_version)
-        4) Issue new access token
-        5) Set new refresh cookie (rotated)
+        Execute:
+        - Read refresh token from cookie
+        - Hash -> rotate refresh session
+        - Load authz snapshot (roles, permissions, token_version)
+        - Issue new access token
+        - Set new refresh cookie (rotated)
         """
         refresh_plain = request.cookies.get(self.cookie_policy.name)
         if not refresh_plain:
@@ -180,15 +170,13 @@ class AuthService:
         user_id = int(getattr(session, "user_id"))
 
         # Load latest authz snapshot (roles/permissions can change)
-        roles, permissions, token_version = self.auth_repo.get_authz_snapshot(db, user_id)
+        _, _, token_version = self.auth_repo.get_authz_snapshot(db, user_id)
         if not token_version:
             raise UserNotFoundOrDisabledException(user_id)
 
-        # Issue new access token (latest token_version)
+        # Phát hành new access token (latest token_version)
         access_token = self.jwt_service.create_access_token(
             subject=str(user_id),
-            roles=roles,
-            permissions=permissions,
             token_version=int(token_version),
         )
 
@@ -201,15 +189,12 @@ class AuthService:
             expires_in=self._access_ttl_minutes * 60,
         )
 
-    # -------------------------
-    # Logout
-    # -------------------------
     def logout(
-        self,
-        db: Session,
-        *,
-        request: Request,
-        response: Response,
+            self,
+            db: Session,
+            *,
+            request: Request,
+            response: Response,
     ) -> None:
         """
         Logout current device/session:
@@ -224,15 +209,12 @@ class AuthService:
 
         self.cookie_policy.clear(response)
 
-    # -------------------------
-    # Logout all
-    # -------------------------
     def logout_all(
-        self,
-        db: Session,
-        *,
-        user_id: int,
-        response: Response,
+            self,
+            db: Session,
+            *,
+            user_id: int,
+            response: Response,
     ) -> int:
         """
         Logout all devices:

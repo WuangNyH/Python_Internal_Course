@@ -61,7 +61,7 @@ class SecuritySettings(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    jwt: JwtSettings | None = None  # vì JwtSettings có field required -> được map từ env trong Settings
+    jwt: JwtSettings  # vì JwtSettings có field required -> được map từ env trong Settings
     refresh_session: RefreshSessionSettings = Field(default_factory=RefreshSessionSettings)
     refresh_cookie: RefreshCookieSettings = Field(default_factory=RefreshCookieSettings)
     cors: CorsSettings = Field(default_factory=CorsSettings)

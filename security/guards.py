@@ -1,8 +1,10 @@
 import logging
+from typing import Callable
+
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
-from core.exceptions.auth_exceptions import InvalidTokenException, UserNotFoundOrDisabledException
+from core.exceptions.auth_exceptions import InvalidTokenException, UserNotFoundOrDisabledException, ForbiddenException
 from security.dependencies import require_current_user
 from security.principals import CurrentUser
 from repositories.auth_repository import AuthRepository
@@ -62,7 +64,7 @@ def require_current_user_verified(
     claim_tv = int(getattr(user, "token_version", 1))
     if claim_tv != int(db_token_version):
         # token bị revoke: coi như token invalid
-        logger.info( # đây không phải system error, thường log INFO là đủ (token bị revoke là event hợp lệ)
+        logger.info(  # đây không phải system error, thường log INFO là đủ (token bị revoke là event hợp lệ)
             "auth.token_revoked",
             extra={
                 "user_id": user_id,
@@ -82,3 +84,41 @@ def require_current_user_verified(
         token_version=int(db_token_version),
         tenant_id=getattr(user, "tenant_id", None),
     )
+
+
+def require_permissions(*required: str) -> Callable[[CurrentUser], CurrentUser]:
+    """
+    Factory dependency: require_permissions("student:read", "student:write")
+    - Nếu thiếu bất kỳ permission nào -> 403
+    """
+    required_set = set(required)
+
+    def _dep(user: CurrentUser = Depends(require_current_user_verified)) -> CurrentUser:
+        # Các permission được yêu cầu nhưng user không có
+        # dùng toán tử '-' với set
+        missing = sorted(required_set - user.permissions)
+
+        if missing:
+            raise ForbiddenException(required=missing)
+        return user
+
+    return _dep
+
+
+def require_roles(*required: str) -> Callable[[CurrentUser], CurrentUser]:
+    """
+    Factory dependency: require_roles("admin", "manager")
+    - Nếu user không có bất kỳ role nào trong required -> 403
+    """
+    required_set = set(required)
+
+    def _dep(user: CurrentUser = Depends(require_current_user_verified)) -> CurrentUser:
+        user_roles = set(user.roles)
+
+        # user phải có ÍT NHẤT 1 role trong required
+        if user_roles.isdisjoint(required_set):
+            raise ForbiddenException(required=[f"role:{r}" for r in sorted(required_set)])
+
+        return user
+
+    return _dep

@@ -15,8 +15,6 @@ class JwtService:
         self,
         *,
         subject: str,
-        permissions: list[str],
-        roles: list[str] | None = None,
         token_version: int = 1,
         extra_claims: dict[str, Any] | None = None,
     ) -> str:
@@ -28,8 +26,6 @@ class JwtService:
             "aud": self._settings.audience,
             "iat": now,
             "exp": now + timedelta(minutes=self._settings.access_token_ttl_minutes),
-            "permissions": permissions,
-            "roles": roles or [],
             "tv": token_version,
         }
         if extra_claims:

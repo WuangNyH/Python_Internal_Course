@@ -580,6 +580,7 @@ JWT gồm 3 phần: Header – Payload (Claims) – Signature
 Trong access token cần có thông tin (pattern chuẩn enterprise):
 
 * `sub` (Subject): Đại diện cho danh tính chính của token, luôn map với `user_id` (field bắt buộc)
+  * `user_id` ở model `User` đang kiểu `int`, dự án thực tế cần đổi sang dùng `UUID`
 * `exp` (Expiration Time): thời hạn token
 * `iat` (Issued At): thời điểm token được tạo
 * (tùy dự án có/ko) `iss`, `aud`
@@ -1110,7 +1111,7 @@ from pydantic import BaseModel
 
 class LoginResponse(BaseModel):
     access_token: str
-    token_type: str = "bearer"
+    token_type: str = "Bearer"
     expires_in: int  # seconds
 ```
 
@@ -1409,8 +1410,6 @@ class JwtService:
         self,
         *,
         subject: str,
-        permissions: list[str],
-        roles: list[str] | None = None,
         token_version: int = 1,
         extra_claims: dict[str, Any] | None = None,
     ) -> str:
@@ -1422,8 +1421,6 @@ class JwtService:
             "aud": self._settings.audience,
             "iat": now,
             "exp": now + timedelta(minutes=self._settings.access_token_ttl_minutes),
-            "permissions": permissions,
-            "roles": roles or [],
             "tv": token_version,
         }
         if extra_claims:
@@ -1580,7 +1577,7 @@ class SecuritySettings(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    jwt: JwtSettings = Field(default_factory=JwtSettings)
+    jwt: JwtSettings  # vì JwtSettings có field required -> được map từ env trong Settings
     refresh_session: RefreshSessionSettings = Field(default_factory=RefreshSessionSettings)
     refresh_cookie: RefreshCookieSettings = Field(default_factory=RefreshCookieSettings)
     cors: CorsSettings = Field(default_factory=CorsSettings)
@@ -2212,14 +2209,17 @@ class ForbiddenException(BusinessException):
 
 #### 2.9.11 Security Dependencies
 
+Base dependency:
+* Chứa `require_current_user`: nơi xử lý token missing/expired/invalid, ko verify DB và tạo `CurrentUser` nhẹ
+  * Được tiêm vào `require_current_user_verified` để sử dụng
+  * Ngoài ra cũng có thể dùng cho các endpoint chỉ cần biết “đã đăng nhập” (không cần verify roles/perms từ DB), ví dụ như `/me` 
+
 ```python
 # security/dependencies.py
-from collections.abc import Callable
 from typing import Any
-from fastapi import Depends, Request
+from fastapi import Request
 
-from core.exceptions.auth_exceptions import TokenExpiredException, AuthTokenMissingException, InvalidTokenException, \
-    ForbiddenException
+from core.exceptions.auth_exceptions import TokenExpiredException, AuthTokenMissingException, InvalidTokenException
 from security.principals import CurrentUser
 
 
@@ -2260,56 +2260,22 @@ def require_current_user(
         raise AuthTokenMissingException(token_type="access")
 
     return CurrentUser.from_claims(claims)
-
-
-def require_permissions(*required: str) -> Callable[[CurrentUser], CurrentUser]:
-    """
-    Factory dependency: require_permissions("student:read", "student:write")
-    - Nếu thiếu bất kỳ permission nào -> 403
-    """
-    required_set = set(required)
-
-    def _dep(user: CurrentUser = Depends(require_current_user)) -> CurrentUser:
-        # Các permission được yêu cầu nhưng user không có
-        # dùng toán tử '-' với set
-        missing = sorted(required_set - user.permissions)
-
-        if missing:
-            raise ForbiddenException(required=missing)
-        return user
-
-    return _dep
-
-
-def require_roles(*required: str) -> Callable[[CurrentUser], CurrentUser]:
-    """
-    Factory dependency: require_roles("admin", "manager")
-    - Nếu user không có bất kỳ role nào trong required -> 403
-    """
-    required_set = set(required)
-
-    def _dep(user: CurrentUser = Depends(require_current_user)) -> CurrentUser:
-        user_roles = set(user.roles)
-
-        # Các role được yêu cầu nhưng user không có
-        missing = sorted(required_set - user_roles)
-
-        if len(missing) == len(required_set):
-            # user không có role nào trong required
-            raise ForbiddenException(required=[f"role:{r}" for r in missing])
-
-        return user
-
-    return _dep
 ```
+
+Guard dependencies xử lý:
+* verified principal
+* role guard
+* permission guard
 
 ```python
 # security/guards.py
 import logging
+from typing import Callable
+
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
-from core.exceptions.auth_exceptions import InvalidTokenException, UserNotFoundOrDisabledException
+from core.exceptions.auth_exceptions import InvalidTokenException, UserNotFoundOrDisabledException, ForbiddenException
 from security.dependencies import require_current_user
 from security.principals import CurrentUser
 from repositories.auth_repository import AuthRepository
@@ -2369,7 +2335,7 @@ def require_current_user_verified(
     claim_tv = int(getattr(user, "token_version", 1))
     if claim_tv != int(db_token_version):
         # token bị revoke: coi như token invalid
-        logger.info( # đây không phải system error, thường log INFO là đủ (token bị revoke là event hợp lệ)
+        logger.info(  # đây không phải system error, thường log INFO là đủ (token bị revoke là event hợp lệ)
             "auth.token_revoked",
             extra={
                 "user_id": user_id,
@@ -2389,6 +2355,44 @@ def require_current_user_verified(
         token_version=int(db_token_version),
         tenant_id=getattr(user, "tenant_id", None),
     )
+
+
+def require_permissions(*required: str) -> Callable[[CurrentUser], CurrentUser]:
+    """
+    Factory dependency: require_permissions("student:read", "student:write")
+    - Nếu thiếu bất kỳ permission nào -> 403
+    """
+    required_set = set(required)
+
+    def _dep(user: CurrentUser = Depends(require_current_user_verified)) -> CurrentUser:
+        # Các permission được yêu cầu nhưng user không có
+        # dùng toán tử '-' với set
+        missing = sorted(required_set - user.permissions)
+
+        if missing:
+            raise ForbiddenException(required=missing)
+        return user
+
+    return _dep
+
+
+def require_roles(*required: str) -> Callable[[CurrentUser], CurrentUser]:
+    """
+    Factory dependency: require_roles("admin", "manager")
+    - Nếu user không có bất kỳ role nào trong required -> 403
+    """
+    required_set = set(required)
+
+    def _dep(user: CurrentUser = Depends(require_current_user_verified)) -> CurrentUser:
+        user_roles = set(user.roles)
+
+        # user phải có ÍT NHẤT 1 role trong required
+        if user_roles.isdisjoint(required_set):
+            raise ForbiddenException(required=[f"role:{r}" for r in sorted(required_set)])
+
+        return user
+
+    return _dep
 ```
 
 ---
@@ -2403,6 +2407,232 @@ Là nơi xử lý toàn bộ luồng:
 
 ```python
 # services/auth_service.py
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
+from fastapi import Request, Response
+from sqlalchemy.orm import Session
+
+from configs.settings.security import SecuritySettings
+from core.exceptions.auth_exceptions import (
+    AuthTokenMissingException,
+    InvalidTokenException,
+    UserNotFoundOrDisabledException,
+)
+from repositories.auth_repository import AuthRepository
+from repositories.refresh_session_repository import RefreshSessionRepository
+from security.cookie_policy import RefreshCookiePolicy
+from security.jwt_service import JwtService
+from security.password import verify_password
+from security.refresh_token import generate_refresh_token, hash_refresh_token
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _ttl_minutes_to_expires_at(ttl_minutes: int) -> datetime:
+    return _utcnow() + timedelta(minutes=int(ttl_minutes))
+
+
+@dataclass(frozen=True)
+class TokenPairOut:
+    """
+    Service DTO (Service -> Router)
+    - access_token trả trong body
+    - refresh_token set trong cookie (HttpOnly) => KHÔNG đưa vào body
+    """
+    access_token: str
+    token_type: str = "Bearer"
+    expires_in: int | None = None  # seconds
+
+
+class AuthService:
+    """
+    Execute:
+    - login: verify credentials -> issue access + refresh cookie + store refresh session
+    - refresh: validate+rotate refresh session -> issue new access + new refresh cookie
+    - logout: revoke refresh session -> clear refresh cookie
+    - logout_all: revoke all sessions for user -> clear refresh cookie
+    """
+
+    def __init__(
+            self,
+            *,
+            auth_repo: AuthRepository,
+            refresh_repo: RefreshSessionRepository,
+            cookie_policy: RefreshCookiePolicy,
+            security_settings: SecuritySettings,
+            jwt_service: JwtService,
+    ):
+        self.auth_repo = auth_repo
+        self.refresh_repo = refresh_repo
+        self.cookie_policy = cookie_policy
+        self.security_settings = security_settings
+        self.jwt_service = jwt_service
+
+        if self.security_settings.jwt is None:
+            raise RuntimeError("SecuritySettings.jwt is not configured")
+
+        self._access_ttl_minutes = int(self.security_settings.jwt.access_token_ttl_minutes)
+        self._refresh_ttl_minutes = int(self.security_settings.refresh_session.ttl_minutes)
+
+    def login(
+            self,
+            db: Session,
+            *,
+            request: Request,
+            response: Response,
+            email: str,
+            password: str,
+    ) -> TokenPairOut:
+        """
+        Execute:
+        - Load user credentials by email
+        - Verify password
+        - Load authz snapshot (roles, permissions, token_version)
+        - Issue access token (JWT)
+        - Issue refresh token (opaque) + store hashed session + set cookie
+        """
+        user = self.auth_repo.get_user_credentials_by_email(db, email)
+
+        if not user:
+            raise InvalidTokenException(token_type="access", reason="invalid_credentials")
+
+        if hasattr(user, "is_active") and not getattr(user, "is_active"):
+            raise UserNotFoundOrDisabledException(getattr(user, "id", None))
+
+        if not verify_password(password, getattr(user, "hashed_password", "")):
+            raise InvalidTokenException(token_type="access", reason="invalid_credentials")
+
+        user_id = int(getattr(user, "id"))
+
+        _, _, token_version = self.auth_repo.get_authz_snapshot(db, user_id)
+        if not token_version:
+            raise UserNotFoundOrDisabledException(user_id)
+
+        # Phát hành access token
+        access_token = self.jwt_service.create_access_token(
+            subject=str(user_id),
+            token_version=int(token_version),
+        )
+
+        # Phát hành refresh token (opaque) + lưu hash ở DB
+        refresh_plain = generate_refresh_token()
+        refresh_hash = hash_refresh_token(refresh_plain)
+        refresh_expires_at = _ttl_minutes_to_expires_at(self._refresh_ttl_minutes)
+
+        self.refresh_repo.create_session(
+            db,
+            user_id=user_id,
+            token_hash=refresh_hash,
+            expires_at=refresh_expires_at,
+            user_agent=request.headers.get("User-Agent"),
+            ip_address=request.client.host if request.client else None,
+        )
+
+        # Set refresh cookie
+        self.cookie_policy.set(response, refresh_plain)
+
+        return TokenPairOut(
+            access_token=access_token,
+            token_type="Bearer",
+            expires_in=self._access_ttl_minutes * 60,
+        )
+
+    def refresh(
+            self,
+            db: Session,
+            *,
+            request: Request,
+            response: Response,
+    ) -> TokenPairOut:
+        """
+        Execute:
+        - Read refresh token from cookie
+        - Hash -> rotate refresh session
+        - Load authz snapshot (roles, permissions, token_version)
+        - Issue new access token
+        - Set new refresh cookie (rotated)
+        """
+        refresh_plain = request.cookies.get(self.cookie_policy.name)
+        if not refresh_plain:
+            raise AuthTokenMissingException(token_type="refresh")
+
+        old_hash = hash_refresh_token(refresh_plain)
+
+        # Rotate refresh session
+        new_plain = generate_refresh_token()
+        new_hash = hash_refresh_token(new_plain)
+        new_expires_at = _ttl_minutes_to_expires_at(self._refresh_ttl_minutes)
+
+        session = self.refresh_repo.rotate_session(
+            db,
+            old_token_hash=old_hash,
+            new_token_hash=new_hash,
+            new_expires_at=new_expires_at,
+        )
+        if not session:
+            # revoked/expired/unknown
+            raise InvalidTokenException(token_type="refresh", reason="session_not_active")
+
+        user_id = int(getattr(session, "user_id"))
+
+        # Load latest authz snapshot (roles/permissions can change)
+        _, _, token_version = self.auth_repo.get_authz_snapshot(db, user_id)
+        if not token_version:
+            raise UserNotFoundOrDisabledException(user_id)
+
+        # Phát hành new access token (latest token_version)
+        access_token = self.jwt_service.create_access_token(
+            subject=str(user_id),
+            token_version=int(token_version),
+        )
+
+        # Set rotated refresh cookie
+        self.cookie_policy.set(response, new_plain)
+
+        return TokenPairOut(
+            access_token=access_token,
+            token_type="Bearer",
+            expires_in=self._access_ttl_minutes * 60,
+        )
+
+    def logout(
+            self,
+            db: Session,
+            *,
+            request: Request,
+            response: Response,
+    ) -> None:
+        """
+        Logout current device/session:
+        - If refresh cookie exists -> revoke that refresh session
+        - Clear cookie always
+        """
+        refresh_plain = request.cookies.get(self.cookie_policy.name)
+        if refresh_plain:
+            token_hash = hash_refresh_token(refresh_plain)
+            # revoke_by_token_hash theo ORM style (bool)
+            self.refresh_repo.revoke_by_token_hash(db, token_hash=token_hash)
+
+        self.cookie_policy.clear(response)
+
+    def logout_all(
+            self,
+            db: Session,
+            *,
+            user_id: int,
+            response: Response,
+    ) -> int:
+        """
+        Logout all devices:
+        - Revoke all refresh sessions for user
+        - Clear cookie
+        - Return number of revoked sessions
+        """
+        count = self.refresh_repo.revoke_all_for_user(db, user_id=user_id)
+        self.cookie_policy.clear(response)
+        return int(count)
 ```
 

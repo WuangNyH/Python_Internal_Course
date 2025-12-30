@@ -1,9 +1,7 @@
-from collections.abc import Callable
 from typing import Any
-from fastapi import Depends, Request
+from fastapi import Request
 
-from core.exceptions.auth_exceptions import TokenExpiredException, AuthTokenMissingException, InvalidTokenException, \
-    ForbiddenException
+from core.exceptions.auth_exceptions import TokenExpiredException, AuthTokenMissingException, InvalidTokenException
 from security.principals import CurrentUser
 
 
@@ -44,44 +42,3 @@ def require_current_user(
         raise AuthTokenMissingException(token_type="access")
 
     return CurrentUser.from_claims(claims)
-
-
-def require_permissions(*required: str) -> Callable[[CurrentUser], CurrentUser]:
-    """
-    Factory dependency: require_permissions("student:read", "student:write")
-    - Nếu thiếu bất kỳ permission nào -> 403
-    """
-    required_set = set(required)
-
-    def _dep(user: CurrentUser = Depends(require_current_user)) -> CurrentUser:
-        # Các permission được yêu cầu nhưng user không có
-        # dùng toán tử '-' với set
-        missing = sorted(required_set - user.permissions)
-
-        if missing:
-            raise ForbiddenException(required=missing)
-        return user
-
-    return _dep
-
-
-def require_roles(*required: str) -> Callable[[CurrentUser], CurrentUser]:
-    """
-    Factory dependency: require_roles("admin", "manager")
-    - Nếu user không có bất kỳ role nào trong required -> 403
-    """
-    required_set = set(required)
-
-    def _dep(user: CurrentUser = Depends(require_current_user)) -> CurrentUser:
-        user_roles = set(user.roles)
-
-        # Các role được yêu cầu nhưng user không có
-        missing = sorted(required_set - user_roles)
-
-        if len(missing) == len(required_set):
-            # user không có role nào trong required
-            raise ForbiddenException(required=[f"role:{r}" for r in missing])
-
-        return user
-
-    return _dep
