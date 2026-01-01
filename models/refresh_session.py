@@ -33,7 +33,14 @@ class RefreshSession(TimeMixin, Base):
     )
 
     # ---- Lifecycle ----
+    # Nếu user không refresh trong expires_at phút -> hết session -> login lại
     expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    # Dù refresh liên tục, sau absolute_expires_at ngày kể từ login -> hết session
+    absolute_expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
     )
@@ -48,12 +55,13 @@ class RefreshSession(TimeMixin, Base):
         nullable=True,
     )
 
-    # ---- Metadata (optional but enterprise-friendly) ----
+    # ---- Metadata (tùy dự án) ----
+    # Quản lý đa thiết bị / đa phiên đăng nhập (Chrome / Windows ...)
     user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
 
     # ---- Relationship ----
-    user = relationship("User", lazy="joined")
+    user = relationship("User", lazy="selectin")
 
     __table_args__ = (
         UniqueConstraint("token_hash", name="uq_refresh_sessions_token_hash"),

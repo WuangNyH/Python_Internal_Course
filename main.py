@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from configs.env import settings_config
+from controllers.auth_controller import auth_router
 from controllers.health_controller import health_router
 from controllers.student_controller import student_router
 from controllers.user_controller import user_router
@@ -12,15 +13,21 @@ from core.middlewares.db_session import DBSessionMiddleware
 from core.middlewares.token_context import TokenContextMiddleware
 from core.middlewares.trace_id import TraceIdMiddleware
 
-app = FastAPI()
+app = FastAPI(
+    swagger_ui_parameters={"persistAuthorization": True}
+)
 
 settings = settings_config()
 setup_logging(sql_echo=(settings.environment == "DEV"))
 
 # Đăng ký router
 app.include_router(health_router, tags=["Health"])
-app.include_router(user_router, prefix="/users", tags=["Users"])
-app.include_router(student_router, prefix="/students", tags=["Students"])
+app.include_router(
+    auth_router, prefix=f"{settings.api_prefix}/auth", tags=["Auth"])
+app.include_router(
+    user_router, prefix=f"{settings.api_prefix}/users", tags=["Users"])
+app.include_router(
+    student_router, prefix=f"{settings.api_prefix}/students", tags=["Students"])
 
 # Đăng ký Exception Handler => thứ tự bắt buộc
 app.add_exception_handler(BusinessException, business_exception_handler)

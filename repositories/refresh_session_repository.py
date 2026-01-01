@@ -22,6 +22,7 @@ class RefreshSessionRepository:
             user_id: int,
             token_hash: str,
             expires_at: datetime,
+            absolute_expires_at: datetime,
             user_agent: str | None = None,
             ip_address: str | None = None,
             now: datetime | None = None,
@@ -32,6 +33,7 @@ class RefreshSessionRepository:
             user_id=user_id,
             token_hash=token_hash,
             expires_at=expires_at,
+            absolute_expires_at=absolute_expires_at,
             user_agent=user_agent,
             ip_address=ip_address,
             created_at=now,
@@ -66,11 +68,12 @@ class RefreshSessionRepository:
                 RefreshSession.token_hash == token_hash,
                 RefreshSession.revoked_at.is_(None),
                 RefreshSession.expires_at > now,
+                RefreshSession.absolute_expires_at > now,
             )
         )
 
         if for_update:
-            stmt = stmt.with_for_update()
+            stmt = stmt.with_for_update(of=RefreshSession)
 
         return db.execute(stmt).scalars().first()
 
@@ -107,9 +110,10 @@ class RefreshSessionRepository:
 
         # Update tại chỗ
         current.token_hash = new_token_hash
-        current.expires_at = new_expires_at
         current.rotated_at = now
         current.updated_at = now
+        # Gia hạn expires_at nhưng KHÔNG vượt quá absolute_expires_at
+        current.expires_at = min(new_expires_at, current.absolute_expires_at)
 
         db.flush()
         return current
@@ -188,7 +192,10 @@ class RefreshSessionRepository:
         before = before or _utcnow()
 
         # Lấy danh sách id cần xóa
-        id_stmt = select(RefreshSession.id).where(RefreshSession.expires_at <= before)
+        id_stmt = select(RefreshSession.id).where(
+            (RefreshSession.expires_at <= before) |
+            (RefreshSession.absolute_expires_at <= before)
+        )
         ids = db.execute(id_stmt).scalars().all()
         if not ids:
             return 0

@@ -1,64 +1,78 @@
 from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi.params import Security
 from sqlalchemy.orm import Session
 
+from core.openapi_responses import UNAUTHORIZED_401, INTERNAL_500, AUTH_COMMON_RESPONSES, NOT_FOUND_404, \
+    BAD_REQUEST_400, AUTHZ_COMMON_RESPONSES, CONFLICT_409, FORBIDDEN_403
+from core.responses import success_response
 from dependencies.db import get_db
+from schemas.common import EmptyData
 from schemas.request.student_schema import StudentCreate, StudentUpdate
 from schemas.response.base import SuccessResponse
-from schemas.response.base import ErrorResponse
 from schemas.response.student_out_schema import StudentOut
+from security.dependencies import require_current_user
+from security.guards import require_roles, require_permissions
+from security.principals import CurrentUser
+from security.schemes import bearer_scheme
 from services.student_service import StudentService
 
-student_router = APIRouter()
+student_router = APIRouter(
+    dependencies=[Security(bearer_scheme)]
+)
 service = StudentService()
 
 
-@student_router.get("", response_model=SuccessResponse[list[StudentOut]])
+@student_router.get(
+    "",
+    response_model=SuccessResponse[list[StudentOut]],
+    responses=AUTH_COMMON_RESPONSES,
+)
 def list_students(
-        request: Request,
         offset: int = 0,
         limit: int = 100,
         db: Session = Depends(get_db),
+        _: CurrentUser = Depends(require_current_user),
 ) -> SuccessResponse[list[StudentOut]]:
     students = service.list_students(db, offset=offset, limit=limit)
     data = [StudentOut.model_validate(student) for student in students]
-    return SuccessResponse(data=data, trace_id=request.state.trace_id)
+    return success_response(data=data)
 
 
 @student_router.get(
     "/{student_id:int}",
     response_model=SuccessResponse[StudentOut],
-    responses={404: {"model": ErrorResponse, "description": "Student not found"}},
+    responses={
+        401: UNAUTHORIZED_401,
+        404: NOT_FOUND_404,
+        500: INTERNAL_500,
+    },
 )
 def get_student(
-        request: Request,
         student_id: int,
         db: Session = Depends(get_db),
+        _: CurrentUser = Depends(require_current_user),
 ) -> SuccessResponse[StudentOut]:
     student = service.get_student(db, student_id)
-    return SuccessResponse(
-        data=StudentOut.model_validate(student),
-        trace_id=request.state.trace_id,
-    )
+    return success_response(StudentOut.model_validate(student))
 
 
 @student_router.get(
     "/search",
     response_model=SuccessResponse[list[StudentOut]],
     responses={
-        400: {
-            "model": ErrorResponse,
-            "description": "Invalid search parameters (business rule violation)"
-        }
+        400: BAD_REQUEST_400,
+        401: UNAUTHORIZED_401,
+        500: INTERNAL_500,
     }
 )
 def search_students(
-        request: Request,
         keyword: str | None = None,
         min_age: int | None = None,
         max_age: int | None = None,
         offset: int = 0,
         limit: int = 100,
         db: Session = Depends(get_db),
+        _: CurrentUser = Depends(require_current_user),
 ) -> SuccessResponse[list[StudentOut]]:
     students = service.search_students(
         db,
@@ -69,7 +83,7 @@ def search_students(
         limit=limit,
     )
     data = [StudentOut.model_validate(s) for s in students]
-    return SuccessResponse(data=data, trace_id=request.state.trace_id)
+    return success_response(data)
 
 
 @student_router.post(
@@ -77,8 +91,11 @@ def search_students(
     response_model=SuccessResponse[StudentOut],
     status_code=status.HTTP_201_CREATED,
     responses={
-        400: {"model": ErrorResponse, "description": "Business validation error"},
-        409: {"model": ErrorResponse, "description": "Email already exists"}
+        400: BAD_REQUEST_400,
+        401: UNAUTHORIZED_401,
+        403: FORBIDDEN_403,
+        409: CONFLICT_409,
+        500: INTERNAL_500,
     },
 )
 def create_student(
@@ -86,6 +103,7 @@ def create_student(
         request: Request,
         response: Response,
         db: Session = Depends(get_db),
+        _: CurrentUser = Depends(require_permissions("student:write")),
 ) -> SuccessResponse[StudentOut]:
     student = service.create_student(db, data)
 
@@ -93,10 +111,9 @@ def create_student(
     location = request.url_for("get_student", student_id=student.id)
     response.headers["location"] = str(location)
 
-    return SuccessResponse(
-        data=StudentOut.model_validate(student),
-        message="Student created successfully",
-        trace_id=request.state.trace_id,
+    return success_response(
+        StudentOut.model_validate(student),
+        message="Student created",
     )
 
 
@@ -104,35 +121,37 @@ def create_student(
     "/{student_id}",
     response_model=SuccessResponse[StudentOut],
     responses={
-        400: {"model": ErrorResponse, "description": "Business validation error"},
-        404: {"model": ErrorResponse, "description": "Not found"},
+        400: BAD_REQUEST_400,
+        401: UNAUTHORIZED_401,
+        403: FORBIDDEN_403,
+        404: NOT_FOUND_404,
+        500: INTERNAL_500,
     }
 )
 def update_student(
-        request: Request,
         student_id: int,
         data: StudentUpdate,
         db: Session = Depends(get_db),
+        _: CurrentUser = Depends(require_permissions("student:write")),
 ) -> SuccessResponse[StudentOut]:
     student = service.update_student(db, student_id, data)
-    return SuccessResponse(
-        data=StudentOut.model_validate(student),
-        message="Student updated successfully",
-        trace_id=request.state.trace_id,
+    return success_response(
+        StudentOut.model_validate(student),
+        message="Student updated",
     )
 
 
+# Double-gate authorization
 @student_router.delete(
     "/{student_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    responses={404: {"model": ErrorResponse, "description": "Not found"}},
+    response_model=SuccessResponse[EmptyData],
+    responses=AUTHZ_COMMON_RESPONSES,
 )
 def delete_student(
-        request: Request,
-        response: Response,
         student_id: int,
         db: Session = Depends(get_db),
-) -> None:
+        _: CurrentUser = Depends(require_roles("ADMIN", "HR_MANAGER")),
+        __: CurrentUser = Depends(require_permissions("student:delete")),
+) -> SuccessResponse[EmptyData]:
     service.delete_student(db, student_id)
-    response.headers["x-trace-id"] = request.state.trace_id
-    return None
+    return success_response(EmptyData(), message="Student deleted")

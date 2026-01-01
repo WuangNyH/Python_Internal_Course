@@ -1008,7 +1008,14 @@ class RefreshSession(TimeMixin, Base):
     )
 
     # ---- Lifecycle ----
+    # Nếu user không refresh trong expires_at phút -> hết session -> login lại
     expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    
+    # Dù refresh liên tục, sau absolute_expires_at ngày kể từ login -> hết session
+    absolute_expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
     )
@@ -1023,12 +1030,13 @@ class RefreshSession(TimeMixin, Base):
         nullable=True,
     )
 
-    # ---- Metadata (optional but enterprise-friendly) ----
+    # ---- Metadata (tùy dự án) ----
+    # Quản lý đa thiết bị / đa phiên đăng nhập (Chrome / Windows ...)
     user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
 
     # ---- Relationship ----
-    user = relationship("User", lazy="joined")
+    user = relationship("User", lazy="selectin")
 
     __table_args__ = (
         UniqueConstraint("token_hash", name="uq_refresh_sessions_token_hash"),
@@ -1040,10 +1048,10 @@ class RefreshSession(TimeMixin, Base):
 
 #### 2.9.2 Password Hashing
 
-Cài thư viện `bcrypt`:
+Cài thư viện `argon2`:
 
 ```bash
-    pip install passlib[bcrypt]
+    pip install passlib[argon2-cffi]
 ```
 
 Tạo Password utility:
@@ -1052,7 +1060,7 @@ Tạo Password utility:
 # security/password.py
 from passlib.context import CryptContext
 
-_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 
 def hash_password(plain_password: str) -> str:
@@ -1092,7 +1100,7 @@ Giải thích chi tiết:
 
 ---
 
-#### 2.9.3 Schemas cho login
+#### 2.9.3 Schemas cho login và logout
 
 ```python
 # schemas/request/login_schema.py
@@ -1113,6 +1121,15 @@ class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "Bearer"
     expires_in: int  # seconds
+```
+
+```python
+# schemas/auth/logout_out_schema.py
+from pydantic import BaseModel
+
+
+class LogoutAllResult(BaseModel):
+    revoked_sessions: int
 ```
 
 > Pattern chuẩn cho Web App <br>
@@ -1200,6 +1217,7 @@ class RefreshSessionRepository:
             user_id: int,
             token_hash: str,
             expires_at: datetime,
+            absolute_expires_at: datetime,
             user_agent: str | None = None,
             ip_address: str | None = None,
             now: datetime | None = None,
@@ -1210,6 +1228,7 @@ class RefreshSessionRepository:
             user_id=user_id,
             token_hash=token_hash,
             expires_at=expires_at,
+            absolute_expires_at=absolute_expires_at,
             user_agent=user_agent,
             ip_address=ip_address,
             created_at=now,
@@ -1244,11 +1263,12 @@ class RefreshSessionRepository:
                 RefreshSession.token_hash == token_hash,
                 RefreshSession.revoked_at.is_(None),
                 RefreshSession.expires_at > now,
+                RefreshSession.absolute_expires_at > now,
             )
         )
 
         if for_update:
-            stmt = stmt.with_for_update()
+            stmt = stmt.with_for_update(of=RefreshSession)
 
         return db.execute(stmt).scalars().first()
 
@@ -1285,9 +1305,10 @@ class RefreshSessionRepository:
 
         # Update tại chỗ
         current.token_hash = new_token_hash
-        current.expires_at = new_expires_at
         current.rotated_at = now
         current.updated_at = now
+        # Gia hạn expires_at nhưng KHÔNG vượt quá absolute_expires_at
+        current.expires_at = min(new_expires_at, current.absolute_expires_at)
 
         db.flush()
         return current
@@ -1366,7 +1387,10 @@ class RefreshSessionRepository:
         before = before or _utcnow()
 
         # Lấy danh sách id cần xóa
-        id_stmt = select(RefreshSession.id).where(RefreshSession.expires_at <= before)
+        id_stmt = select(RefreshSession.id).where(
+            (RefreshSession.expires_at <= before) |
+            (RefreshSession.absolute_expires_at <= before)
+        )
         ids = db.execute(id_stmt).scalars().all()
         if not ids:
             return 0
@@ -1805,6 +1829,8 @@ class SecuritySettings(BaseModel):
 
 ```dotenv
 # file .env
+API_PREFIX=/api/v1
+
 ENVIRONMENT=DEV
 
 DATABASE_URL=postgresql+psycopg2://postgres:123456%40root@localhost:5432/techzen_academy
@@ -1819,6 +1845,7 @@ JWT_AUDIENCE=techzen-academy-api
 
 ACCESS_TOKEN_EXPIRED_MINUTES=15
 REFRESH_SESSION_TTL_MINUTES=20160
+REFRESH_SESSION_ABSOLUTE_TTL_MINUTES=43200
 
 REFRESH_COOKIE_SECURE=false
 REFRESH_COOKIE_SAMESITE=lax
@@ -1836,28 +1863,34 @@ from typing import Any
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, SecretStr
 
-from configs.settings.security import SecuritySettings, SameSite, JwtSettings, JwtAlgorithm, RefreshCookieSettings
+from configs.settings.cors import CorsSettings
+from configs.settings.security import SecuritySettings, SameSite, JwtSettings, JwtAlgorithm, RefreshCookieSettings, \
+    RefreshSessionSettings
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
+    api_prefix: str = Field(default="/api/v1", validation_alias="API_PREFIX")
     environment: str = Field(..., validation_alias="ENVIRONMENT")
     database_url: str = Field(..., validation_alias="DATABASE_URL")
 
     cors_allow_origins_raw: str | None = Field(default=None, validation_alias="CORS_ALLOW_ORIGINS")
+
     jwt_algorithm: JwtAlgorithm = Field(default="HS256", validation_alias="JWT_ALGORITHM")
     jwt_secret_key: SecretStr = Field(..., validation_alias="JWT_SECRET_KEY")
     jwt_issuer: str = Field(..., validation_alias="JWT_ISSUER")
     jwt_audience: str = Field(..., validation_alias="JWT_AUDIENCE")
     access_token_expired_minutes: int = Field(default=15, validation_alias="ACCESS_TOKEN_EXPIRED_MINUTES")
     refresh_token_expired_minutes: int = Field(default=20160, validation_alias="REFRESH_SESSION_TTL_MINUTES")
+    refresh_token_absolute_expired_minutes: int = Field(default=43200,
+                                                        validation_alias="REFRESH_SESSION_ABSOLUTE_TTL_MINUTES")
     refresh_cookie_secure: bool | None = Field(default=None, validation_alias="REFRESH_COOKIE_SECURE")
     refresh_cookie_samesite: SameSite | None = Field(default=None, validation_alias="REFRESH_COOKIE_SAMESITE")
     refresh_cookie_path: str | None = Field(default=None, validation_alias="REFRESH_COOKIE_PATH")
     refresh_cookie_max_age_seconds: int | None = Field(default=None, validation_alias="REFRESH_COOKIE_MAX_AGE_SECONDS")
 
-    security: SecuritySettings = Field(default_factory=SecuritySettings)
+    security: SecuritySettings | None = Field(default=None)
 
     tz: str = Field(default="UTC", validation_alias="TZ")
 
@@ -1866,26 +1899,39 @@ class Settings(BaseSettings):
 
     # Pydantic hook để mapping CORS origins, JWT, refresh session TTL, refresh cookie settings
     def model_post_init(self, __context):
-        updates: dict[str, Any] = {}
+        # Validate & normalize api_prefix
+        if not self.api_prefix.startswith("/"):
+            raise ValueError("Invalid API_PREFIX: must start with '/'")
+        if self.api_prefix != "/" and self.api_prefix.endswith("/"):
+            self.api_prefix = self.api_prefix.rstrip("/")
 
-        updates.update(self._build_cors_updates())
-        updates.update(self._build_jwt_updates())
-        updates.update(self._build_refresh_session_updates())
-        updates.update(self._build_refresh_cookie_updates())  # có validate cross-field
+        # Derive refresh cookie path if not provided
+        if not self.refresh_cookie_path:
+            self.refresh_cookie_path = f"{self.api_prefix}/auth"
 
-        # Apply once
-        if updates:
-            self.security = self.security.model_copy(update=updates)
+        # Build security settings
+        jwt_settings = self._build_jwt_settings()
+        cors_settings = self._build_cors_settings()
+        refresh_session_settings = self._build_refresh_session_settings()
+        refresh_cookie_settings = self._build_refresh_cookie_settings()
 
-    # Builders nội dung update
-    def _build_cors_updates(self) -> dict[str, Any]:
+        # Compose full SecuritySettings
+        self.security = SecuritySettings(
+            jwt=jwt_settings,
+            cors=cors_settings,
+            refresh_session=refresh_session_settings,
+            refresh_cookie=refresh_cookie_settings,
+        )
+
+    def _build_cors_settings(self) -> CorsSettings:
+        base = CorsSettings()
         if not self.cors_allow_origins_raw:
-            return {}
+            return base
 
         origins = [o.strip() for o in self.cors_allow_origins_raw.split(",") if o.strip()]
-        return {"cors": self.security.cors.model_copy(update={"allow_origins": origins})}
+        return base.model_copy(update={"allow_origins": origins})
 
-    def _build_jwt_updates(self) -> dict[str, Any]:
+    def _build_jwt_settings(self) -> JwtSettings:
         issuer = (self.jwt_issuer or "").strip()
         audience = (self.jwt_audience or "").strip()
         secret = self.jwt_secret_key.get_secret_value().strip()
@@ -1899,53 +1945,52 @@ class Settings(BaseSettings):
         if self.access_token_expired_minutes <= 0:
             raise ValueError("Invalid JWT config: ACCESS_TOKEN_EXPIRED_MINUTES must be > 0")
 
-        jwt_settings = JwtSettings(
+        return JwtSettings(
             algorithm=self.jwt_algorithm,
             secret_key=self.jwt_secret_key,
             issuer=issuer,
             audience=audience,
             access_token_ttl_minutes=self.access_token_expired_minutes,
         )
-        return {"jwt": jwt_settings}
 
-    def _build_refresh_session_updates(self) -> dict[str, Any]:
+    def _build_refresh_session_settings(self) -> RefreshSessionSettings:
         if self.refresh_token_expired_minutes <= 0:
             raise ValueError("Invalid refresh session config: REFRESH_SESSION_TTL_MINUTES must be > 0")
+        if self.refresh_token_absolute_expired_minutes <= 0:
+            raise ValueError("Invalid refresh session config: REFRESH_SESSION_ABSOLUTE_TTL_MINUTES must be > 0")
+        if self.refresh_token_absolute_expired_minutes < self.refresh_token_expired_minutes:
+            raise ValueError("Invalid refresh session config: ABSOLUTE_TTL must be >= TTL (idle timeout)")
 
-        refresh_session = self.security.refresh_session.model_copy(
-            update={"ttl_minutes": self.refresh_token_expired_minutes}
+        base = RefreshSessionSettings()
+        return base.model_copy(
+            update={
+                "ttl_minutes": self.refresh_token_expired_minutes,
+                "absolute_ttl_minutes": self.refresh_token_absolute_expired_minutes,
+            }
         )
-        return {"refresh_session": refresh_session}
 
-    def _build_refresh_cookie_updates(self) -> dict[str, Any]:
-        cookie_settings = self._merge_refresh_cookie_settings()
-        self._validate_cookie_policy(cookie_settings)
-        return {"refresh_cookie": cookie_settings}
+    def _build_refresh_cookie_settings(self) -> RefreshCookieSettings:
+        base = RefreshCookieSettings()
 
-    def _merge_refresh_cookie_settings(self) -> RefreshCookieSettings:
-        refresh_updates: dict[str, Any] = {}
-
+        updates: dict[str, Any] = {}
         if self.refresh_cookie_secure is not None:
-            refresh_updates["secure"] = self.refresh_cookie_secure
+            updates["secure"] = self.refresh_cookie_secure
         if self.refresh_cookie_samesite is not None:
-            refresh_updates["samesite"] = self.refresh_cookie_samesite
+            updates["samesite"] = self.refresh_cookie_samesite
         if self.refresh_cookie_path:
-            refresh_updates["path"] = self.refresh_cookie_path.strip()
+            updates["path"] = self.refresh_cookie_path.strip()
         if self.refresh_cookie_max_age_seconds is not None:
             if self.refresh_cookie_max_age_seconds <= 0:
                 raise ValueError("Invalid cookie config: REFRESH_COOKIE_MAX_AGE_SECONDS must be > 0")
-            refresh_updates["max_age_seconds"] = self.refresh_cookie_max_age_seconds
+            updates["max_age_seconds"] = self.refresh_cookie_max_age_seconds
 
-        return (
-            self.security.refresh_cookie.model_copy(update=refresh_updates)
-            if refresh_updates
-            else self.security.refresh_cookie
-        )
+        cookie = base.model_copy(update=updates) if updates else base
 
-    @staticmethod
-    def _validate_cookie_policy(cookie_settings: RefreshCookieSettings) -> None:
-        if cookie_settings.samesite == "none" and cookie_settings.secure is not True:
+        # Cross-field validate
+        if cookie.samesite == "none" and cookie.secure is not True:
             raise ValueError("Invalid cookie policy: SameSite=None requires Secure=true")
+
+        return cookie
 
 
 @lru_cache
@@ -2395,6 +2440,10 @@ def require_roles(*required: str) -> Callable[[CurrentUser], CurrentUser]:
     return _dep
 ```
 
+Lưu ý: 
+* Khi sử dụng `require_current_user_verified` để verify quyền trực tiếp từ DB sẽ làm tăng số lần query DB => gây nghẽn cổ chai khi lượng người dùng lớn
+* Dùng cache (Redis / in-memory) cho authz snapshot để giảm tải DB khi lượng người dùng lớn
+
 ---
 
 #### 2.9.11 AuthService
@@ -2429,10 +2478,6 @@ from security.refresh_token import generate_refresh_token, hash_refresh_token
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _ttl_minutes_to_expires_at(ttl_minutes: int) -> datetime:
-    return _utcnow() + timedelta(minutes=int(ttl_minutes))
 
 
 @dataclass(frozen=True)
@@ -2476,6 +2521,7 @@ class AuthService:
 
         self._access_ttl_minutes = int(self.security_settings.jwt.access_token_ttl_minutes)
         self._refresh_ttl_minutes = int(self.security_settings.refresh_session.ttl_minutes)
+        self._refresh_absolute_ttl_minutes = int(self.security_settings.refresh_session.absolute_ttl_minutes)
 
     def login(
             self,
@@ -2520,13 +2566,17 @@ class AuthService:
         # Phát hành refresh token (opaque) + lưu hash ở DB
         refresh_plain = generate_refresh_token()
         refresh_hash = hash_refresh_token(refresh_plain)
-        refresh_expires_at = _ttl_minutes_to_expires_at(self._refresh_ttl_minutes)
+
+        now = _utcnow()
+        refresh_expires_at = now + timedelta(minutes=self._refresh_ttl_minutes)
+        refresh_absolute_expires_at = now + timedelta(minutes=self._refresh_absolute_ttl_minutes)
 
         self.refresh_repo.create_session(
             db,
             user_id=user_id,
             token_hash=refresh_hash,
             expires_at=refresh_expires_at,
+            absolute_expires_at=refresh_absolute_expires_at,
             user_agent=request.headers.get("User-Agent"),
             ip_address=request.client.host if request.client else None,
         )
@@ -2564,13 +2614,16 @@ class AuthService:
         # Rotate refresh session
         new_plain = generate_refresh_token()
         new_hash = hash_refresh_token(new_plain)
-        new_expires_at = _ttl_minutes_to_expires_at(self._refresh_ttl_minutes)
+
+        now = _utcnow()
+        new_expires_at = now + timedelta(minutes=self._refresh_ttl_minutes)
 
         session = self.refresh_repo.rotate_session(
             db,
             old_token_hash=old_hash,
             new_token_hash=new_hash,
             new_expires_at=new_expires_at,
+            now=now,
         )
         if not session:
             # revoked/expired/unknown
@@ -2636,3 +2689,826 @@ class AuthService:
         return int(count)
 ```
 
+---
+
+#### 2.9.12 Auth Controller
+
+Tạo helper chung cho success response và failed response để:
+* Nhất quán API Contract: mọi endpoint trả cùng format
+* Ngăn lặp code: ko phải set `trace_id` thủ công ở từng router
+* Bảo đảm `trace_id` luôn đúng theo “source of truth” là `trace_id_ctx` (đã được `TraceIdMiddleware` set)
+* Dễ mở rộng thêm: message mặc định, mapping `error_code`, `extra`, ...
+
+```python
+# core/responses.py
+from typing import TypeVar
+from core.trace import trace_id_ctx
+from schemas.response.base import SuccessResponse
+
+T = TypeVar("T")
+
+
+def success_response(
+    data: T | None = None,
+    *,
+    message: str | None = None,
+) -> SuccessResponse[T]:
+    """
+    Helper chuẩn hoá response body cho happy-path:
+    - Luôn inject trace_id từ trace_id_ctx (source of truth)
+    - Không phụ thuộc Request
+    - Dùng cho mọi happy-path HTTP response
+    """
+    return SuccessResponse(
+        success=True,
+        data=data,
+        message=message,
+        trace_id=trace_id_ctx.get() or None,
+    )
+```
+
+Tạo template responses chuẩn tài liệu OpenAPI để dùng chung (tránh lặp code):
+
+```python
+# core/openapi_responses.py
+from schemas.response.base import ErrorResponse
+
+
+BAD_REQUEST_400 = {
+    "model": ErrorResponse,
+    "description": "Invalid parameters (business rule violation)",
+}
+UNAUTHORIZED_401 = {
+    "model": ErrorResponse,
+    "description": "Unauthorized (missing/invalid/expired token, or invalid credentials)",
+}
+FORBIDDEN_403 = {
+    "model": ErrorResponse,
+    "description": "Forbidden (permission denied)",
+}
+NOT_FOUND_404 = {
+    "model": ErrorResponse,
+    "description": "Resource not found",
+}
+CONFLICT_409 = {
+    "model": ErrorResponse,
+    "description": "Resource conflict (already exists or unique constraint violation)",
+}
+INTERNAL_500 = {
+    "model": ErrorResponse,
+    "description": "Internal server error",
+}
+
+AUTH_COMMON_RESPONSES = {
+    401: UNAUTHORIZED_401,
+    500: INTERNAL_500,
+}
+
+AUTHZ_COMMON_RESPONSES = {
+    401: UNAUTHORIZED_401,
+    403: FORBIDDEN_403,
+    500: INTERNAL_500,
+}
+```
+
+Các router cần thiết cho luồng xác thực người dùng:
+
+```python
+# controllers/auth_controller.py
+from fastapi import APIRouter, Depends, Request, Response, status
+from sqlalchemy.orm import Session
+
+from core.openapi_responses import UNAUTHORIZED_401, INTERNAL_500, AUTH_COMMON_RESPONSES
+from core.responses import success_response
+from dependencies.db import get_db
+from schemas.auth.login_out_schema import LoginResponse
+from schemas.auth.login_schema import LoginRequest
+from schemas.auth.logout_out_schema import LogoutAllResult
+from schemas.response.base import SuccessResponse
+from services.auth_service import AuthService, TokenPairOut
+from security.providers import get_auth_service
+from security.principals import CurrentUser
+from security.guards import require_current_user_verified
+
+auth_router = APIRouter()
+
+
+def _to_response(out: TokenPairOut) -> SuccessResponse[LoginResponse]:
+    if out.expires_in is None:
+        raise RuntimeError("TokenPairOut.expires_in must not be None")
+    return success_response(
+        LoginResponse(
+            access_token=out.access_token,
+            token_type=out.token_type,
+            expires_in=out.expires_in,
+        )
+    )
+
+
+@auth_router.post(
+    "/login",
+    response_model=SuccessResponse[LoginResponse],
+    responses=AUTH_COMMON_RESPONSES,
+)
+def login(
+        payload: LoginRequest,
+        request: Request,
+        response: Response,
+        svc: AuthService = Depends(get_auth_service),
+        db: Session = Depends(get_db)
+) -> SuccessResponse[LoginResponse]:
+    """
+    Login:
+    - verify credentials
+    - issue access token in body
+    - set refresh token cookie (HttpOnly)
+    """
+    out = svc.login(
+        db=db,
+        request=request,
+        response=response,
+        email=str(payload.email),
+        password=payload.password,
+    )
+    return _to_response(out)
+
+
+@auth_router.post(
+    "/refresh",
+    response_model=SuccessResponse[LoginResponse],
+    responses=AUTH_COMMON_RESPONSES,
+)
+def refresh(
+        request: Request,
+        response: Response,
+        svc: AuthService = Depends(get_auth_service),
+        db: Session = Depends(get_db),
+) -> SuccessResponse[LoginResponse]:
+    """
+    Refresh:
+    - read refresh cookie
+    - rotate refresh session
+    - issue new access token
+    - set new refresh cookie
+    """
+    out = svc.refresh(
+        db=db,
+        request=request,
+        response=response,
+    )
+    return _to_response(out)
+
+
+@auth_router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={500: INTERNAL_500},
+)
+def logout(
+        request: Request,
+        response: Response,
+        svc: AuthService = Depends(get_auth_service),
+        db: Session = Depends(get_db),
+) -> Response:
+    """
+    Logout current device:
+    - revoke refresh session (if exists)
+    - clear refresh cookie always
+    """
+    svc.logout(
+        db=db,
+        request=request,
+        response=response,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@auth_router.post(
+    "/logout-all",
+    response_model=SuccessResponse[LogoutAllResult],
+    responses=AUTH_COMMON_RESPONSES,
+)
+def logout_all(
+        response: Response,
+        user: CurrentUser = Depends(require_current_user_verified),
+        svc: AuthService = Depends(get_auth_service),
+        db: Session = Depends(get_db),
+) -> SuccessResponse[LogoutAllResult]:
+    """
+    Logout all devices:
+    - require verified current user (token_version valid)
+    - revoke all refresh sessions for this user
+    - clear refresh cookie
+    """
+    user_id = int(user.user_id)
+    revoked = svc.logout_all(
+        db=db,
+        user_id=user_id,
+        response=response,
+    )
+    return success_response(LogoutAllResult(revoked_sessions=revoked))
+```
+
+---
+
+#### 2.9.13 Refactor Student Controller
+
+Tạo Empty schema dùng cho các route trả empty payload
+
+```python
+# schemas/common.py
+from pydantic import BaseModel
+
+class EmptyData(BaseModel):
+    pass
+```
+
+Refactor Student Controller để apply Auth/Authz với các quy tắc chuẩn sau:
+* Role: quyết định ai được phép làm loại hành động này
+* Permission: quyết định hành động cụ thể
+* Endpoint nhạy cảm => dùng Role + Permission (double-gate authorization)
+* Endpoint thường => chỉ cần Permission
+
+
+```python
+from fastapi import APIRouter, Depends, Request, Response, status
+from sqlalchemy.orm import Session
+
+from core.openapi_responses import UNAUTHORIZED_401, INTERNAL_500, AUTH_COMMON_RESPONSES, NOT_FOUND_404, \
+    BAD_REQUEST_400, AUTHZ_COMMON_RESPONSES, CONFLICT_409, FORBIDDEN_403
+from core.responses import success_response
+from dependencies.db import get_db
+from schemas.common import EmptyData
+from schemas.request.student_schema import StudentCreate, StudentUpdate
+from schemas.response.base import SuccessResponse
+from schemas.response.student_out_schema import StudentOut
+from security.dependencies import require_current_user
+from security.guards import require_roles, require_permissions
+from security.principals import CurrentUser
+from services.student_service import StudentService
+
+student_router = APIRouter()
+service = StudentService()
+
+
+@student_router.get(
+    "",
+    response_model=SuccessResponse[list[StudentOut]],
+    responses=AUTH_COMMON_RESPONSES,
+)
+def list_students(
+        offset: int = 0,
+        limit: int = 100,
+        db: Session = Depends(get_db),
+        _: CurrentUser = Depends(require_current_user),
+) -> SuccessResponse[list[StudentOut]]:
+    students = service.list_students(db, offset=offset, limit=limit)
+    data = [StudentOut.model_validate(student) for student in students]
+    return success_response(data=data)
+
+
+@student_router.get(
+    "/{student_id:int}",
+    response_model=SuccessResponse[StudentOut],
+    responses={
+        401: UNAUTHORIZED_401,
+        404: NOT_FOUND_404,
+        500: INTERNAL_500,
+    },
+)
+def get_student(
+        student_id: int,
+        db: Session = Depends(get_db),
+        _: CurrentUser = Depends(require_current_user),
+) -> SuccessResponse[StudentOut]:
+    student = service.get_student(db, student_id)
+    return success_response(StudentOut.model_validate(student))
+
+
+@student_router.get(
+    "/search",
+    response_model=SuccessResponse[list[StudentOut]],
+    responses={
+        400: BAD_REQUEST_400,
+        401: UNAUTHORIZED_401,
+        500: INTERNAL_500,
+    }
+)
+def search_students(
+        keyword: str | None = None,
+        min_age: int | None = None,
+        max_age: int | None = None,
+        offset: int = 0,
+        limit: int = 100,
+        db: Session = Depends(get_db),
+        _: CurrentUser = Depends(require_current_user),
+) -> SuccessResponse[list[StudentOut]]:
+    students = service.search_students(
+        db,
+        keyword=keyword,
+        min_age=min_age,
+        max_age=max_age,
+        offset=offset,
+        limit=limit,
+    )
+    data = [StudentOut.model_validate(s) for s in students]
+    return success_response(data)
+
+
+@student_router.post(
+    "",
+    response_model=SuccessResponse[StudentOut],
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        400: BAD_REQUEST_400,
+        401: UNAUTHORIZED_401,
+        403: FORBIDDEN_403,
+        409: CONFLICT_409,
+        500: INTERNAL_500,
+    },
+)
+def create_student(
+        data: StudentCreate,
+        request: Request,
+        response: Response,
+        db: Session = Depends(get_db),
+        _: CurrentUser = Depends(require_permissions("student:write")),
+) -> SuccessResponse[StudentOut]:
+    student = service.create_student(db, data)
+
+    # Set Location header
+    location = request.url_for("get_student", student_id=student.id)
+    response.headers["location"] = str(location)
+
+    return success_response(
+        StudentOut.model_validate(student),
+        message="Student created",
+    )
+
+
+@student_router.patch(
+    "/{student_id}",
+    response_model=SuccessResponse[StudentOut],
+    responses={
+        400: BAD_REQUEST_400,
+        401: UNAUTHORIZED_401,
+        403: FORBIDDEN_403,
+        404: NOT_FOUND_404,
+        500: INTERNAL_500,
+    }
+)
+def update_student(
+        student_id: int,
+        data: StudentUpdate,
+        db: Session = Depends(get_db),
+        _: CurrentUser = Depends(require_permissions("student:write")),
+) -> SuccessResponse[StudentOut]:
+    student = service.update_student(db, student_id, data)
+    return success_response(
+        StudentOut.model_validate(student),
+        message="Student updated",
+    )
+
+
+# Double-gate authorization
+@student_router.delete(
+    "/{student_id}",
+    response_model=SuccessResponse[EmptyData],
+    responses=AUTHZ_COMMON_RESPONSES,
+)
+def delete_student(
+        student_id: int,
+        db: Session = Depends(get_db),
+        _: CurrentUser = Depends(require_roles("ADMIN", "HR_MANAGER")),
+        __: CurrentUser = Depends(require_permissions("student:delete")),
+) -> SuccessResponse[EmptyData]:
+    service.delete_student(db, student_id)
+    return success_response(EmptyData(), message="Student deleted")
+```
+
+---
+
+#### 2.9.14 Cấu hình Swagger/OpenAPI security scheme
+
+Tạo “bearer scheme” dùng cho docs:
+
+```python
+# security/schemes.py
+from fastapi.security import HTTPBearer
+
+# auto_error=False để không can thiệp flow hiện tại (guards vẫn là nơi quyết định 401/403)
+bearer_scheme = HTTPBearer(auto_error=False)
+```
+
+Gắn scheme vào OpenAPI cho các route cần login:
+* Gắn cho toàn `student_router`
+
+```python
+from fastapi import APIRouter, Security
+from fastapi.security import HTTPAuthorizationCredentials
+from security.schemes import bearer_scheme
+
+student_router = APIRouter(
+    dependencies=[Security(bearer_scheme)]
+)
+```
+
+* Gắn theo từng endpoint (khi muốn để một số endpoint public)
+
+```python
+@student_router.get(
+    "",
+    dependencies=[Security(bearer_scheme)],
+    ...
+)
+def list_students(...):
+    ...
+```
+
+Bật `"persistAuthorization"` để Swagger nhớ token:
+
+```python
+# main.py
+app = FastAPI(
+    swagger_ui_parameters={"persistAuthorization": True}
+)
+```
+
+---
+
+#### 2.9.15 Seeding User Data
+
+1. Trước khi seed dữ liệu thì cần chạy Alembic để tạo hoặc cập nhật migration:
+* Nếu DB đã có sẵn bảng `students` và `tasks` từ bài trước => cần khai báo để Alembic quản lý
+    ```bash
+        alembic stamp base
+    ```
+* Chạy Alembic để tự động gen file migration cho các model mới tạo
+    ```bash
+        alembic revision --autogenerate -m "init auth and student models"
+    ```
+* Chạy `alembic upgrade head` để cập nhật schema mới nhất nhất cho DB
+
+2. Cần import các model trong `models/__init__.py` để:
+* dùng Alembic autogenerate
+* dùng script seed
+
+```python
+from models.base import Base
+
+# Association tables (Table)
+from models.associations import user_roles, role_permissions
+
+# Core models
+from models.user import User
+from models.role import Role
+from models.permission import Permission
+from models.refresh_session import RefreshSession
+
+# Domain models
+from models.student import Student
+from models.task import Task
+
+# Mixins (optional, không bắt buộc)
+from models.time_mixin import TimeMixin
+
+__all__ = [
+    "Base",
+    "User",
+    "Role",
+    "Permission",
+    "RefreshSession",
+    "Student",
+    "Task",
+]
+```
+
+3. Tạo script để seed dữ liệu mẫu cho user gồm:
+* Permissions
+* Roles
+* Role–Permission mapping
+* Users
+* User–Role mapping
+
+```python
+# scripts/seed_user_data.py
+from dataclasses import dataclass
+from typing import Iterable
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from configs.database import SessionLocal
+from security.password import hash_password
+
+from models import Permission, Role, User
+
+
+@dataclass(frozen=True)
+class SeedRole:
+    name: str
+    permission_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SeedUser:
+    email: str
+    password: str
+    role_names: tuple[str, ...]
+    is_active: bool = True
+    token_version: int = 1
+
+
+PERM_STUDENT_READ = "student:read"
+PERM_STUDENT_WRITE = "student:write"
+PERM_STUDENT_DELETE = "student:delete"
+
+PERM_TASK_READ = "task:read"
+PERM_TASK_WRITE = "task:write"
+PERM_TASK_DELETE = "task:delete"
+
+DEFAULT_PERMISSIONS: tuple[str, ...] = (
+    # Students
+    PERM_STUDENT_READ,
+    PERM_STUDENT_WRITE,
+    PERM_STUDENT_DELETE,
+    # Tasks
+    PERM_TASK_READ,
+    PERM_TASK_WRITE,
+    PERM_TASK_DELETE,
+)
+
+DEFAULT_ROLES: tuple[SeedRole, ...] = (
+    SeedRole(
+        name="ADMIN",
+        permission_codes=DEFAULT_PERMISSIONS,
+    ),
+    SeedRole(
+        name="TEACHER",
+        permission_codes=(
+            PERM_STUDENT_READ,
+            PERM_STUDENT_WRITE,
+            PERM_TASK_READ,
+            PERM_TASK_WRITE,
+        ),
+    ),
+    SeedRole(
+        name="STUDENT",
+        permission_codes=(
+            PERM_STUDENT_READ,
+            PERM_TASK_READ,
+        ),
+    ),
+)
+
+DEFAULT_USERS: tuple[SeedUser, ...] = (
+    SeedUser(
+        email="admin@example.com",
+        password="Admin@123456",
+        role_names=("ADMIN",),
+    ),
+    SeedUser(
+        email="teacher@example.com",
+        password="Teacher@123456",
+        role_names=("TEACHER",),
+    ),
+    SeedUser(
+        email="student@example.com",
+        password="Student@123456",
+        role_names=("STUDENT",),
+    ),
+)
+
+
+# Upsert helpers (idempotent)
+def upsert_permissions(db: Session, codes: Iterable[str]) -> dict[str, Permission]:
+    existing = db.execute(select(Permission).where(Permission.code.in_(list(codes)))).scalars().all()
+    by_code = {p.code: p for p in existing}
+
+    for code in codes:
+        if code in by_code:
+            continue
+        p = Permission(code=code)
+        db.add(p)
+        by_code[code] = p
+
+    db.flush()
+    return by_code
+
+
+def upsert_roles(
+        db: Session,
+        roles: Iterable[SeedRole],
+        permissions_by_code: dict[str, Permission],
+) -> dict[str, Role]:
+    role_names = [r.name for r in roles]
+    existing = db.execute(select(Role).where(Role.name.in_(role_names))).scalars().all()
+    by_name = {r.name: r for r in existing}
+
+    for seed in roles:
+        role = by_name.get(seed.name)
+        if role is None:
+            role = Role(name=seed.name)
+            db.add(role)
+            by_name[seed.name] = role
+
+        # Gán permissions theo code (many-to-many)
+        desired_perms = [permissions_by_code[c] for c in seed.permission_codes if c in permissions_by_code]
+        # Tránh duplicate trong list relationship
+        role.permissions = list({p.code: p for p in desired_perms}.values())
+
+    db.flush()
+    return by_name
+
+
+def upsert_users(
+        db: Session,
+        users: Iterable[SeedUser],
+        roles_by_name: dict[str, Role],
+) -> dict[str, User]:
+    emails = [u.email for u in users]
+    existing = db.execute(select(User).where(User.email.in_(emails))).scalars().all()
+    by_email = {u.email: u for u in existing}
+
+    for seed in users:
+        user = by_email.get(seed.email)
+        if user is None:
+            user = User(
+                email=seed.email,
+                hashed_password=hash_password(seed.password),
+                is_active=seed.is_active,
+                token_version=seed.token_version,
+            )
+            db.add(user)
+            by_email[seed.email] = user
+        else:
+            # Đồng bộ trạng thái cơ bản
+            user.is_active = seed.is_active
+            user.token_version = seed.token_version
+
+        # Gán roles theo name (many-to-many)
+        desired_roles = [roles_by_name[n] for n in seed.role_names if n in roles_by_name]
+        user.roles = list({r.name: r for r in desired_roles}.values())
+
+    db.flush()
+    return by_email
+
+
+# Main runner
+def seed() -> None:
+    db = SessionLocal()
+    try:
+        permissions_by_code = upsert_permissions(db, DEFAULT_PERMISSIONS)
+        upsert_roles(db, DEFAULT_ROLES, permissions_by_code)
+        roles_by_name = db.execute(select(Role)).scalars().all()
+        roles_by_name_map = {r.name: r for r in roles_by_name}
+
+        upsert_users(db, DEFAULT_USERS, roles_by_name_map)
+
+        db.commit()
+
+        print("Seed users/roles/permissions: OK")
+        print("Created/ensured users:")
+        for u in DEFAULT_USERS:
+            print(f" - {u.email} / {u.password} (roles={u.role_names})")
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+if __name__ == "__main__":
+    seed()
+```
+
+---
+
+### 2.10 Tổng hợp toàn bộ luồng Auth/Authz
+
+#### 2.10.1 Kiến trúc tổng thể (Hybrid Middleware + Depends)
+
+> Middleware làm việc “cross-cutting” cho mọi request:
+> * tạo `trace_id`
+> * parse token nhẹ (decode claims, không query DB)
+> * gắn vào `request.state` để các tầng sau dùng lại
+> 
+> Depends/Guards quyết định “chặn hay không chặn” theo từng route:
+> * `require_current_user()` => chặn 401 nếu missing/invalid/expired
+> * `require_current_user_verified()` => verify theo DB snapshot (roles/perms/token_version)
+> * `require_permissions(...)`, `require_roles(...)` => chặn 403 khi thiếu quyền
+> 
+> Service chỉ xử lý nghiệp vụ, lỗi auth/authz cũng là `BusinessException` để đi qua handler chung
+
+#### 2.10.2 Luồng xử lý chuẩn cho mọi request
+
+```
+Client
+  |
+  |  HTTP Request
+  v
+[CORS Middleware]  (preflight OPTIONS có thể dừng ở đây)
+  |
+  v
+[DBSessionMiddleware]   -> gắn db session vào request context
+  |
+  v
+[TraceIdMiddleware]     -> request.state.trace_id (+ X-Trace-Id)
+  |
+  v
+[TokenContextMiddleware]  (NHẸ)
+  - đọc Authorization Bearer (hoặc cookie access_token fallback)
+  - verify chữ ký + decode claims
+  - request.state.token_claims = claims | None
+  - request.state.token_error = None | "expired" | "invalid"
+  |
+  v
+[Router/FastAPI]
+  |
+  +--> Depends: require_current_user()
+  |      - token_error == expired -> raise TokenExpiredException (401)
+  |      - token_error == invalid -> raise InvalidTokenException (401)
+  |      - claims missing -> raise AuthTokenMissingException (401)
+  |      - else -> CurrentUser.from_claims()
+  |
+  +--> Depends: require_current_user_verified() (OPTIONAL theo route)
+  |      - parse user_id
+  |      - auth_repo.get_authz_snapshot(db, user_id)
+  |      - check user active / token_version
+  |      - return principal “fresh” (roles/perms từ DB)
+  |
+  +--> Depends: require_permissions / require_roles (OPTIONAL theo route)
+  |      - thiếu quyền -> raise ForbiddenException (403)
+  |
+  v
+[Service Layer]
+  - xử lý nghiệp vụ
+  - raise BusinessException nếu vi phạm rule
+  |
+  v
+[Exception Handlers]
+  - BusinessException -> ErrorResponse chuẩn (4xx) + trace_id
+  - Unhandled Exception -> 500 + ErrorResponse chung chung
+  |
+  v
+Client nhận JSON response chuẩn (+ trace_id)
+```
+
+Mấu chốt quan trọng đối với kiến trúc Hybrid Middleware + Depends:
+* Middleware không quyết định 401/403 (trừ vài trường hợp đặc biệt nếu muốn chặn global)
+* 401/403 nằm ở Depends/Guards, nên route nào cần gì thì khai báo đúng cái đó
+
+#### 2.10.3 Use case Auth flows: Login / Refresh / Logout
+
+1) Login: phát hành access token + tạo refresh session + set cookie
+
+Endpoint: `POST /auth/login`:
+
+```markdown
+Client -> /auth/login (email, password)
+  -> AuthService.login
+      - verify credentials
+      - issue access_token (JWT) -> trả trong body
+      - generate refresh_token (opaque)
+      - hash refresh_token -> lưu refresh_sessions
+      - set refresh cookie (HttpOnly)
+Client nhận:
+  - body: access_token
+  - cookie: refresh_token (HttpOnly)
+```
+
+Các kết quả lỗi hay gặp:
+* sai credentials => 401 (InvalidTokenException reason invalid_credentials)
+* user disabled => 401 (UserNotFoundOrDisabledException)
+
+2. Refresh: rotate refresh token + cấp access token mới
+
+Endpoint: `POST /auth/refresh`:
+
+```markdown
+Client -> /auth/refresh (cookie refresh_token)
+  -> AuthService.refresh
+      - đọc refresh cookie
+      - hash -> rotate_session(old_hash -> new_hash)
+      - issue new access_token
+      - set cookie refresh_token mới
+```
+
+Các nhánh lỗi quan trọng:
+* thiếu cookie refresh => 401 (AuthTokenMissingException refresh)
+* session hết hạn / revoked / unknown => 401 (InvalidTokenException refresh, reason session_not_active)
+* absolute_expires_at hết hạn => coi như session không active => 401 (đăng nhập lại)
+
+3. Logout: revoke refresh session hiện tại + clear cookie
+
+Endpoint: `POST /auth/logout` (204)
+* Nếu có refresh cookie → revoke session đó
+* Luôn clear cookie
+
+4. Logout all: revoke toàn bộ session + clear cookie
+
+Endpoint: `POST /auth/logout-all`
+* yêu cầu user đã login + verified
+* revoke tất cả refresh_sessions của user
+* clear cookie
+* trả số lượng session bị revoke

@@ -22,10 +22,6 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _ttl_minutes_to_expires_at(ttl_minutes: int) -> datetime:
-    return _utcnow() + timedelta(minutes=int(ttl_minutes))
-
-
 @dataclass(frozen=True)
 class TokenPairOut:
     """
@@ -34,8 +30,8 @@ class TokenPairOut:
     - refresh_token set trong cookie (HttpOnly) => KHÔNG đưa vào body
     """
     access_token: str
+    expires_in: int  # seconds
     token_type: str = "Bearer"
-    expires_in: int | None = None  # seconds
 
 
 class AuthService:
@@ -67,6 +63,7 @@ class AuthService:
 
         self._access_ttl_minutes = int(self.security_settings.jwt.access_token_ttl_minutes)
         self._refresh_ttl_minutes = int(self.security_settings.refresh_session.ttl_minutes)
+        self._refresh_absolute_ttl_minutes = int(self.security_settings.refresh_session.absolute_ttl_minutes)
 
     def login(
             self,
@@ -111,13 +108,17 @@ class AuthService:
         # Phát hành refresh token (opaque) + lưu hash ở DB
         refresh_plain = generate_refresh_token()
         refresh_hash = hash_refresh_token(refresh_plain)
-        refresh_expires_at = _ttl_minutes_to_expires_at(self._refresh_ttl_minutes)
+
+        now = _utcnow()
+        refresh_expires_at = now + timedelta(minutes=self._refresh_ttl_minutes)
+        refresh_absolute_expires_at = now + timedelta(minutes=self._refresh_absolute_ttl_minutes)
 
         self.refresh_repo.create_session(
             db,
             user_id=user_id,
             token_hash=refresh_hash,
             expires_at=refresh_expires_at,
+            absolute_expires_at=refresh_absolute_expires_at,
             user_agent=request.headers.get("User-Agent"),
             ip_address=request.client.host if request.client else None,
         )
@@ -127,8 +128,8 @@ class AuthService:
 
         return TokenPairOut(
             access_token=access_token,
-            token_type="Bearer",
             expires_in=self._access_ttl_minutes * 60,
+            token_type="Bearer",
         )
 
     def refresh(
@@ -155,13 +156,16 @@ class AuthService:
         # Rotate refresh session
         new_plain = generate_refresh_token()
         new_hash = hash_refresh_token(new_plain)
-        new_expires_at = _ttl_minutes_to_expires_at(self._refresh_ttl_minutes)
+
+        now = _utcnow()
+        new_expires_at = now + timedelta(minutes=self._refresh_ttl_minutes)
 
         session = self.refresh_repo.rotate_session(
             db,
             old_token_hash=old_hash,
             new_token_hash=new_hash,
             new_expires_at=new_expires_at,
+            now=now,
         )
         if not session:
             # revoked/expired/unknown
@@ -185,8 +189,8 @@ class AuthService:
 
         return TokenPairOut(
             access_token=access_token,
-            token_type="Bearer",
             expires_in=self._access_ttl_minutes * 60,
+            token_type="Bearer",
         )
 
     def logout(

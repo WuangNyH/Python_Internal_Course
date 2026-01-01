@@ -32,6 +32,7 @@ class RefreshSessionSettings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     ttl_minutes: int = Field(default=60 * 24 * 14)
+    absolute_ttl_minutes: int = Field(default=60 * 24 * 30)
     rotate_on_refresh: bool = Field(default=True)
 
 
