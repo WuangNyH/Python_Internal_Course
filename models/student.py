@@ -2,7 +2,7 @@ from sqlalchemy import String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from models.base import Base
-from models.TimeMixin import TimeMixin
+from models.time_mixin import TimeMixin
 
 
 class Student(TimeMixin, Base):

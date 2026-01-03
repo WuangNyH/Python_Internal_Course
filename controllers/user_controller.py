@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from dependencies.db import get_db
 from schemas.request.user_schema import UserCreate
-from schemas.response.error_response import ErrorResponse
+from schemas.response.base import ErrorResponse
 from schemas.response.user_out_schema import UserOut
 from services import user_service
 

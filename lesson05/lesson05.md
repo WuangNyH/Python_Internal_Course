@@ -1190,10 +1190,10 @@ Giải thích chi tiết:
 
 ```python
 from fastapi import FastAPI
-from middlewares.db_session import DBSessionMiddleware
+from core.middlewares.db_session import DBSessionMiddleware
 
 app = FastAPI()
-app.add_middleware(DBSessionMiddleware) # type: ignore[arg-type]
+app.add_middleware(DBSessionMiddleware)  # type: ignore[arg-type]
 ```
 
 Chú thích:
@@ -1739,8 +1739,8 @@ from controllers.health_controller import health_router
 from controllers.student_controller import student_router
 from controllers.user_controller import user_router
 from core.app_logging import setup_logging
-from middlewares.db_session import DBSessionMiddleware
-from middlewares.trace_id import TraceIdMiddleware
+from core.middlewares.db_session import DBSessionMiddleware
+from core.middlewares.trace_id import TraceIdMiddleware
 
 app = FastAPI()
 

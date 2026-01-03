@@ -1,11 +1,12 @@
 from sqlalchemy.orm import Session
-from fastapi import HTTPException, status
 
+from core.exceptions.student_exception import StudentNotFoundException, InvalidStudentSearchAgeRangeException, \
+    StudentEmailAlreadyExistsException, InvalidStudentAgeException
 from models.student import Student
 from repositories.student_repository import StudentRepository
 from schemas.request.student_schema import StudentCreate, StudentUpdate
 
-import  logging
+import logging
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +20,7 @@ class StudentService:
     def get_student(self, db: Session, student_id: int) -> Student:
         student = self.repo.get_by_id(db, student_id)
         if not student:
-            # Tạm thời sử dụng HTTPException (buổi sau nâng cấp lên custom exception)
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Student not found",
-            )
+            raise StudentNotFoundException(student_id)
         return student
 
     def list_students(self, db: Session, offset: int = 0, limit: int = 100) -> list[Student]:
@@ -41,14 +38,7 @@ class StudentService:
     ) -> list[Student]:
         # Rule nghiệp vụ đơn giản: min_age không được lớn hơn max_age
         if min_age is not None and max_age is not None and min_age > max_age:
-            logger.warning(
-                "Invalid search params: min_age=%s max_age=%s",
-                min_age, max_age,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="min_age must be <= max_age",
-            )
+            raise InvalidStudentSearchAgeRangeException(min_age, max_age)
 
         return self.repo.search(
             db,
@@ -64,17 +54,11 @@ class StudentService:
         # Rule nghiệp vụ: email unique
         existed = self.repo.get_by_email(db, str(data.email))
         if existed:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Email already exists",
-            )
+            raise StudentEmailAlreadyExistsException(str(data.email))
 
         # Rule nghiệp vụ: tuổi hợp lệ
         if data.age < 18:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Age must be >= 18",
-            )
+            raise InvalidStudentAgeException(data.age)
 
         student = Student(**data.model_dump())
         return self.repo.create(db, student)
@@ -85,10 +69,7 @@ class StudentService:
 
         # Rule nghiệp vụ: không cho update age dưới 18
         if data.age is not None and data.age < 18:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Age must be >= 18",
-            )
+            raise InvalidStudentAgeException(data.age)
 
         # exclude_unset=True: chỉ lấy field client gửi
         updated_data = data.model_dump(exclude_unset=True)

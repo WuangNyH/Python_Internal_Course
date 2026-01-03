@@ -3,4 +3,7 @@ from sqlalchemy.orm import Session
 
 
 def get_db(request: Request) -> Session:
-    return request.state.db
+    db = getattr(request.state, "db", None)
+    if db is None:
+        raise RuntimeError("DB session is not available on request.state. Check DBSessionMiddleware order.")
+    return db
