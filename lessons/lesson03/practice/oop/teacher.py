@@ -1,4 +1,4 @@
-from lesson03.practice.oop.person import Person
+from lessons.lesson03.practice.oop.person import Person
 
 
 class Teacher(Person):
@@ -17,7 +17,7 @@ class Teacher(Person):
     @years.setter
     def years(self, value: float):
         if value < 0:
-            raise ValueError("Years must be non-negative")
+            raise ValueError(">>>>> Years must be non-negative")
         self._years = value
 
 

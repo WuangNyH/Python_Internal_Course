@@ -1,6 +1,6 @@
 from typing import List
 
-from lesson03.exercises.exe2.student import Student
+from lessons.lesson03.exercises.exe2.student import Student
 
 
 def load_students_from_file(filename: str) -> List[Student]:

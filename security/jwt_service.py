@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
-
 from jose import jwt
 from jose.exceptions import ExpiredSignatureError, JWTError
 
 from configs.settings.security import JwtSettings
+from security.jwt_claims import JwtClaims
+from core.security.types import TokenError
 
 
 class JwtService:
@@ -21,12 +22,13 @@ class JwtService:
         now = datetime.now(timezone.utc)
 
         payload: dict[str, Any] = {
-            "sub": subject,
-            "iss": self._settings.issuer,
-            "aud": self._settings.audience,
-            "iat": now,
-            "exp": now + timedelta(minutes=self._settings.access_token_ttl_minutes),
-            "tv": token_version,
+            JwtClaims.SUBJECT: subject,
+            JwtClaims.ISSUER: self._settings.issuer,
+            JwtClaims.AUDIENCE: self._settings.audience,
+            JwtClaims.ISSUED_AT: int(now.timestamp()),
+            JwtClaims.EXPIRES_AT: int((now + timedelta(
+                minutes=self._settings.access_token_ttl_minutes)).timestamp()),
+            JwtClaims.TOKEN_VERSION: token_version,
         }
         if extra_claims:
             payload.update(extra_claims)
@@ -52,6 +54,6 @@ class JwtService:
             )
             return claims, None
         except ExpiredSignatureError:
-            return None, "expired"
+            return None, TokenError.EXPIRED
         except JWTError:
-            return None, "invalid"
+            return None, TokenError.INVALID

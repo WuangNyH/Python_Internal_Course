@@ -1,8 +1,4 @@
 # ===== Khởi tạo object =====
-from lesson03.practice.oop.bank_account import BankAccount
-from lesson03.practice.oop.logger import Logger
-from lesson03.practice.oop.person import Person
-from lesson03.practice.oop.staff import Staff
 from student import Student
 
 

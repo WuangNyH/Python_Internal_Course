@@ -8,6 +8,7 @@ from models.user import User
 from models.role import Role
 from models.permission import Permission
 from models.refresh_session import RefreshSession
+from models.audit_log import AuditLog
 
 # Domain models
 from models.student import Student
@@ -22,6 +23,7 @@ __all__ = [
     "Role",
     "Permission",
     "RefreshSession",
+    "AuditLog",
     "Student",
     "Task",
 ]

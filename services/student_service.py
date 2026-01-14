@@ -1,3 +1,4 @@
+from typing import Sequence
 from sqlalchemy.orm import Session
 
 from core.exceptions.student_exception import StudentNotFoundException, InvalidStudentSearchAgeRangeException, \
@@ -23,7 +24,9 @@ class StudentService:
             raise StudentNotFoundException(student_id)
         return student
 
-    def list_students(self, db: Session, offset: int = 0, limit: int = 100) -> list[Student]:
+    def list_students(
+            self, db: Session, offset: int = 0, limit: int = 100
+    ) -> Sequence[Student]:
         return self.repo.list(db, offset=offset, limit=limit)
 
     def search_students(

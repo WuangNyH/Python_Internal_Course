@@ -5,7 +5,7 @@ _pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 def hash_password(plain_password: str) -> str:
     if not plain_password or plain_password.strip() == "":
-        raise ValueError("Password must not be empty")  # Tầng service sẽ xử lý
+        raise ValueError(">>>>> Password must not be empty")  # Tầng service sẽ xử lý
     return _pwd_context.hash(plain_password)
 
 

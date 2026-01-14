@@ -1,11 +1,14 @@
+import uuid
 from typing import Any
 from pydantic import BaseModel, Field, ConfigDict
+
+from security.jwt_claims import JwtClaims
 
 
 class CurrentUser(BaseModel):
     model_config = ConfigDict(frozen=True) # CurrentUser nên là immutable
 
-    user_id: int
+    user_id: uuid.UUID
     roles: list[str] = Field(default_factory=list)
     permissions: set[str] = Field(default_factory=set)
 
@@ -21,16 +24,26 @@ class CurrentUser(BaseModel):
         # cls là param đặc biệt khi dùng chung với @classmethod
         # cls là tham chiếu tới class đang gọi method (ở đây là CurrentUser)
 
-        sub = claims.get("sub")
-        roles = claims.get("roles") or []
-        perms = claims.get("permissions") or []
-        tv = claims.get("tv") or claims.get("token_version") or 1
+        sub = claims.get(JwtClaims.SUBJECT)
+        tv = claims.get(JwtClaims.TOKEN_VERSION, 1)
+        tid = claims.get(JwtClaims.TENANT_ID)
+
+        if not sub:
+            raise ValueError(">>>>> Missing subject (sub) in token claims")
+
+        try:
+            user_uuid = uuid.UUID(str(sub))
+        except (ValueError, TypeError):
+            raise ValueError(">>>>> Invalid subject (sub) ID")
 
         # cls(...): gọi __init__ để khởi tạo đối tượng CurrentUser
         return cls(
-            user_id=int(sub), # sub thường là string -> cần convert int
-            roles=list(roles),
-            permissions=set(perms),
+            user_id=user_uuid,
+
+            # always empty for access token
+            roles=[],
+            permissions=set(),
+
             token_version=int(tv),
-            tenant_id=claims.get("tid"),
+            tenant_id=tid,
         )

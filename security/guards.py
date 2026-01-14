@@ -5,6 +5,7 @@ from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
 from core.exceptions.auth_exceptions import InvalidTokenException, UserNotFoundOrDisabledException, ForbiddenException
+from core.security.types import TokenType
 from security.dependencies import require_current_user
 from security.principals import CurrentUser
 from repositories.auth_repository import AuthRepository
@@ -32,7 +33,7 @@ def require_current_user_verified(
     """
     # Parse user_id từ principal (sub)
     try:
-        user_id = int(user.user_id)
+        user_id = user.user_id
     except (TypeError, ValueError):
         logger.warning(
             "auth.invalid_subject",
@@ -43,12 +44,12 @@ def require_current_user_verified(
             },
         )
         # Access token đã decode được nhưng claim sub sai format -> invalid access token
-        raise InvalidTokenException("access", reason="invalid_subject")
+        raise InvalidTokenException(TokenType.ACCESS, reason="invalid_subject")
 
     # DB snapshot (roles/perms/token_version)
     roles, permissions, db_token_version = auth_repo.get_authz_snapshot(db, user_id)
 
-    # user not found/disabled (repo return token_version=0 để báo invalid)
+    # user not found/disabled/deleted (repo return token_version=0 để báo invalid)
     if not db_token_version:
         logger.warning(
             "auth.user_not_found_or_disabled",
@@ -74,7 +75,7 @@ def require_current_user_verified(
                 "method": request.method,
             },
         )
-        raise InvalidTokenException("access", reason="token_revoked")
+        raise InvalidTokenException(TokenType.ACCESS, reason="token_revoked")
 
     # Return principal fresh theo DB (roles/perms có thể đã thay đổi)
     return CurrentUser(

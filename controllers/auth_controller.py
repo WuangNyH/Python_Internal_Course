@@ -1,14 +1,18 @@
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.params import Security
 from sqlalchemy.orm import Session
 
-from core.openapi_responses import INTERNAL_500, AUTH_COMMON_RESPONSES
+from core.context.deps import get_request_context
+from core.context.request_context import RequestContext
+from core.openapi_responses import AUTH_COMMON_RESPONSES, AUTHZ_COMMON_RESPONSES
 from core.responses import success_response
 from dependencies.db import get_db
 from schemas.auth.login_out_schema import LoginResponse
 from schemas.auth.login_schema import LoginRequest
 from schemas.auth.logout_out_schema import LogoutAllResult
+from schemas.common import EmptyData
 from schemas.response.base import SuccessResponse
+from security.csrf import require_allowed_origin_or_referer
 from security.schemes import bearer_scheme
 from services.auth_service import AuthService, TokenPairOut
 from security.providers import get_auth_service
@@ -19,8 +23,6 @@ auth_router = APIRouter()
 
 
 def _to_response(out: TokenPairOut) -> SuccessResponse[LoginResponse]:
-    if out.expires_in is None:
-        raise RuntimeError("TokenPairOut.expires_in must not be None")
     return success_response(
         LoginResponse(
             access_token=out.access_token,
@@ -39,8 +41,9 @@ def login(
         payload: LoginRequest,
         request: Request,
         response: Response,
+        db: Session = Depends(get_db),
+        ctx: RequestContext = Depends(get_request_context),
         svc: AuthService = Depends(get_auth_service),
-        db: Session = Depends(get_db)
 ) -> SuccessResponse[LoginResponse]:
     """
     Login:
@@ -50,6 +53,7 @@ def login(
     """
     out = svc.login(
         db=db,
+        ctx=ctx,
         request=request,
         response=response,
         email=str(payload.email),
@@ -61,23 +65,26 @@ def login(
 @auth_router.post(
     "/refresh",
     response_model=SuccessResponse[LoginResponse],
-    responses=AUTH_COMMON_RESPONSES,
+    responses=AUTHZ_COMMON_RESPONSES,
 )
 def refresh(
         request: Request,
         response: Response,
-        svc: AuthService = Depends(get_auth_service),
         db: Session = Depends(get_db),
+        ctx: RequestContext = Depends(get_request_context),
+        _: None = Depends(require_allowed_origin_or_referer), # CSRF defense
+        svc: AuthService = Depends(get_auth_service),
 ) -> SuccessResponse[LoginResponse]:
     """
     Refresh:
     - read refresh cookie
     - rotate refresh session
     - issue new access token
-    - set new refresh cookie
+    - set new refresh cookie (HttpOnly)
     """
     out = svc.refresh(
         db=db,
+        ctx=ctx,
         request=request,
         response=response,
     )
@@ -86,15 +93,17 @@ def refresh(
 
 @auth_router.post(
     "/logout",
-    status_code=status.HTTP_204_NO_CONTENT,
-    responses={500: INTERNAL_500},
+    response_model=SuccessResponse[EmptyData],
+    responses=AUTHZ_COMMON_RESPONSES,
 )
 def logout(
         request: Request,
         response: Response,
-        svc: AuthService = Depends(get_auth_service),
         db: Session = Depends(get_db),
-) -> Response:
+        ctx: RequestContext = Depends(get_request_context),
+        _: None = Depends(require_allowed_origin_or_referer), # CSRF defense
+        svc: AuthService = Depends(get_auth_service),
+) -> SuccessResponse[EmptyData]:
     """
     Logout current device:
     - revoke refresh session (if exists)
@@ -102,10 +111,11 @@ def logout(
     """
     svc.logout(
         db=db,
+        ctx=ctx,
         request=request,
         response=response,
     )
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return success_response(EmptyData(), message="Logged out")
 
 
 @auth_router.post(
@@ -116,9 +126,10 @@ def logout(
 )
 def logout_all(
         response: Response,
+        db: Session = Depends(get_db),
+        ctx: RequestContext = Depends(get_request_context),
         user: CurrentUser = Depends(require_current_user_verified),
         svc: AuthService = Depends(get_auth_service),
-        db: Session = Depends(get_db),
 ) -> SuccessResponse[LogoutAllResult]:
     """
     Logout all devices:
@@ -126,9 +137,10 @@ def logout_all(
     - revoke all refresh sessions for this user
     - clear refresh cookie
     """
-    user_id = int(user.user_id)
+    user_id = user.user_id
     revoked = svc.logout_all(
         db=db,
+        ctx=ctx,
         user_id=user_id,
         response=response,
     )

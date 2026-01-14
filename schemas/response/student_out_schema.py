@@ -1,8 +1,10 @@
 from datetime import datetime
-from pydantic import BaseModel, EmailStr
+from pydantic import EmailStr
+
+from schemas.response.base import TimestampMixin
 
 
-class StudentOut(BaseModel):
+class StudentOut(TimestampMixin):
     id: int
     full_name: str
     age: int
@@ -10,7 +12,3 @@ class StudentOut(BaseModel):
     phone_number: str | None = None
     created_at: datetime
     updated_at: datetime
-
-    class Config:
-        # Cho phép map trực tiếp từ SQLAlchemy ORM object
-        from_attributes = True

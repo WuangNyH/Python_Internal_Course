@@ -29,7 +29,7 @@ def load_tasks(filename: str) -> List[Task]:
                 try:
                     due_date = datetime.strptime(due_str, "%Y-%m-%d")
                 except ValueError:
-                    print(f"Ngày không hợp lệ ở dòng {line_no}: {due_str}")
+                    print(f">>>>> Ngày không hợp lệ ở dòng {line_no}: {due_str}")
                     continue
 
                 tasks.append(Task(desc, due_date, status))

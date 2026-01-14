@@ -2,6 +2,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from configs.settings.cors import CorsSettings
+from core.audit.audit_mode import AuditMode
 
 SameSite = Literal["lax", "strict", "none"]
 JwtAlgorithm = Literal["HS256", "RS256"]
@@ -53,6 +54,19 @@ class RefreshCookieSettings(BaseModel):
     max_age_seconds: int = Field(default=60 * 60 * 24 * 14)  # 14 days
 
 
+class CsrfSettings(BaseModel):
+    """
+    CSRF trusted origins allowlist:
+    - Dùng cho cookie-auth endpoints (refresh/logout).
+    - Exact match origin: "scheme://host[:port]"
+    - Không dùng wildcard để tránh mở rộng ngoài ý muốn.
+    """
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = Field(default=True)
+    trusted_origins: list[str] = Field(default_factory=list)
+
+
 class SecuritySettings(BaseModel):
     """
     Nhóm cấu hình security, có thể mở rộng thêm:
@@ -66,3 +80,5 @@ class SecuritySettings(BaseModel):
     refresh_session: RefreshSessionSettings = Field(default_factory=RefreshSessionSettings)
     refresh_cookie: RefreshCookieSettings = Field(default_factory=RefreshCookieSettings)
     cors: CorsSettings = Field(default_factory=CorsSettings)
+    csrf: CsrfSettings = Field(default_factory=CsrfSettings)
+    audit_mode: AuditMode = Field(default=AuditMode.ON)

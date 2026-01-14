@@ -1,6 +1,7 @@
 from functools import lru_cache
 
 from configs.env import settings_config
+from dependencies.providers import get_audit_log_service
 from repositories.auth_repository import AuthRepository
 from repositories.refresh_session_repository import RefreshSessionRepository
 from security.cookie_policy import RefreshCookiePolicy
@@ -41,4 +42,5 @@ def get_auth_service() -> AuthService:
         cookie_policy=get_refresh_cookie_policy(),
         security_settings=settings.security,
         jwt_service=get_jwt_service(),
+        audit_log_service=get_audit_log_service(),
     )

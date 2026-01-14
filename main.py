@@ -10,6 +10,8 @@ from core.app_logging import setup_logging
 from core.exceptions.base import BusinessException
 from core.exceptions.exception_handlers import business_exception_handler, unhandled_exception_handler
 from core.middlewares.db_session import DBSessionMiddleware
+from core.middlewares.request_id import RequestIdMiddleware
+from core.middlewares.request_logging import RequestLoggingMiddleware
 from core.middlewares.token_context import TokenContextMiddleware
 from core.middlewares.trace_id import TraceIdMiddleware
 
@@ -36,7 +38,9 @@ app.add_exception_handler(Exception, unhandled_exception_handler)
 # Đăng ký middleware => thứ tự quan trọng
 app.add_middleware(DBSessionMiddleware)
 app.add_middleware(TokenContextMiddleware)
-app.add_middleware(TraceIdMiddleware)  # add sau để bọc ngoài
+app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(TraceIdMiddleware)
+app.add_middleware(RequestIdMiddleware)  # add sau để bọc ngoài
 
 # CORS middleware (OUTERMOST)
 cors = settings.security.cors
