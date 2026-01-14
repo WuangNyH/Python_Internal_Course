@@ -1,5 +1,6 @@
+from datetime import datetime
 from typing import Generic, TypeVar
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 T = TypeVar("T")
 
@@ -17,3 +18,11 @@ class ErrorResponse(BaseModel):
     message: str
     trace_id: str | None = None
     extra: dict | None = None
+
+
+class TimestampMixin(BaseModel):
+    # Cho phép map trực tiếp từ SQLAlchemy ORM object
+    model_config = ConfigDict(from_attributes=True)
+
+    created_at: datetime
+    updated_at: datetime

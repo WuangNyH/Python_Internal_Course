@@ -1,5 +1,5 @@
 # ===== BTTH9 =====
-from lesson03.practice.oop.person import Person
+from lessons.lesson03.practice.oop.person import Person
 
 
 class Community:

@@ -1,54 +1,48 @@
-from datetime import date
+import re
+from typing import Any, ClassVar
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from pydantic import BaseModel, Field, model_validator, field_validator
+from core.search.constants import MAX_KEYWORD_LENGTH
+from schemas.request.search_common import CreatedRangeParams, PagedSortParams, StrictSortParams
 
 
 class UserCreate(BaseModel):
-    name: str
-    age: int
-    address: str | None = None
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+    is_active: bool = True
 
-# class UserCreate(BaseModel):
-#     name: str = Field(
-#         min_length=2,
-#         max_length=50,
-#         pattern=r"^[A-Za-z ]+$",
-#         description="User name (2-50 characters) contains only letters",
-#         examples=["Taro Kun"]
-#     )
-#     age: int
-#     address: str | None = None
 
-# class UserCreate(BaseModel):
-#     name: str = Field(
-#         min_length=2,
-#         max_length=50,
-#         pattern=r"^[A-Za-z ]+$",
-#         description="User name (2-50 characters) contains only letters",
-#         examples=["Taro Kun"]
-#     )
-#     age: int = Field(ge=0, le=150)
-#     address: str | None = None
+class UserUpdate(BaseModel):
+    # PATCH semantics: field nào None => không update
+    email: EmailStr | None = None
+    password: str | None = Field(default=None, min_length=8, max_length=128)
+    is_active: bool | None = None
 
-# class UserCreate(BaseModel):
-#     name: str = Field(min_length=2, max_length=50)
-#     age: int = Field(ge=1, le=150)
-#     address: str | None = None
-#
-#     @field_validator("name")
-#     @classmethod
-#     def name_not_empty(cls, v: str):
-#         if not v.strip():
-#             raise ValueError("Name cannot be empty")
-#         return v.strip()
-#
-#
-# class BookingCreate(BaseModel):
-#     start_date: date
-#     end_date: date
-#
-#     @model_validator(mode="after")
-#     def check_date_range(self):
-#         if self.start_date >= self.end_date:
-#             raise ValueError("end_date must be after start_date")
-#         return self
+
+class UserSearchParams(PagedSortParams, StrictSortParams, CreatedRangeParams):
+    ALLOWED_SORT_FIELDS: ClassVar[set[str]] = {"id", "email", "is_active", "created_at", "updated_at"}
+
+    # ===== Filters =====
+    email: EmailStr | None = Field(default=None, description="Exact email")
+    # Keyword search (q), ví dụ search email
+
+    q: str | None = Field(
+        default=None,
+        description="Keyword search (email contains)",
+        min_length=1,
+    )
+
+    is_active: bool | None = None
+
+    @field_validator("q", mode="before")
+    @classmethod
+    def normalize_q(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not s:
+            return None
+
+        # collapse whitespace -> protect performance/log size
+        s = re.sub(r"\s+", " ", s)
+        return s[:MAX_KEYWORD_LENGTH]

@@ -1,6 +1,7 @@
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from security.principals import CurrentUser
 from security.providers import get_jwt_service
 
 
@@ -9,6 +10,7 @@ class TokenContextMiddleware(BaseHTTPMiddleware):
     Parse token nhẹ:
     - Nếu có token: verify + decode claims -> request.state.token_claims
     - Nếu token lỗi: request.state.token_error = "expired" | "invalid"
+    - Nếu token OK: build claims-based principal -> request.state.current_user
     - Không raise 401/403 tại middleware
     - Không query DB
     """
@@ -16,6 +18,7 @@ class TokenContextMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         request.state.token_claims = None
         request.state.token_error = None
+        request.state.current_user = None
 
         token = _extract_token(request)
         if token:
@@ -23,6 +26,12 @@ class TokenContextMiddleware(BaseHTTPMiddleware):
             claims, err = jwt_service.decode_access_token(token)
             request.state.token_claims = claims
             request.state.token_error = err  # None | "expired" | "invalid"
+
+            # Attach principal for logging/observability only (NOT verified)
+            if claims and err is None:
+                # Defensive: only build if dict
+                if isinstance(claims, dict):
+                    request.state.current_user = CurrentUser.from_claims(claims)
 
         return await call_next(request)
 

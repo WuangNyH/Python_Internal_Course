@@ -18,6 +18,7 @@ class Permission(TimeMixin, Base):
     code: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
 
     roles: Mapped[list[Role]] = relationship(
+        "Role",
         secondary=role_permissions,
         back_populates="permissions",
         lazy="selectin",

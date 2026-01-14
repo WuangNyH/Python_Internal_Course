@@ -1,8 +1,6 @@
 # ===== BTTH7 =====
-from lesson03.practice.oop.oop_practice7 import Product
-from lesson03.practice.oop.oop_practice8 import Employee
-from lesson03.practice.oop.oop_practice9 import Community
-from lesson03.practice.oop.person import Person
+from lessons.lesson03.practice.oop.oop_practice9 import Community
+from lessons.lesson03.practice.oop.person import Person
 
 # Tạo danh sách sản phẩm
 # products = [

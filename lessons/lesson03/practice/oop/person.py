@@ -15,7 +15,7 @@ class Person:
     @age.setter
     def age(self, value):
         if value < 0:
-            raise ValueError("Age must be non-negative")
+            raise ValueError(">>>>> Age must be non-negative")
         self._age = value
 
     @property

@@ -19,12 +19,14 @@ class Role(TimeMixin, Base):
     name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
 
     users: Mapped[list[User]] = relationship(
+        "User",
         secondary=user_roles,
         back_populates="roles",
         lazy="selectin",
     )
 
     permissions: Mapped[list[Permission]] = relationship(
+        "Permission",
         secondary=role_permissions,
         back_populates="roles",
         lazy="selectin",

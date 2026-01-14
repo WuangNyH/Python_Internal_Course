@@ -5,16 +5,17 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from core.exceptions.base import BusinessException
+from core.http.request_state_keys import RequestStateKeys
 from schemas.response.base import ErrorResponse
 
 logger = logging.getLogger(__name__)
 
 
-async def business_exception_handler(
+def business_exception_handler(
         request: Request,
         exc: BusinessException,
 ):
-    trace_id = getattr(request.state, "trace_id", None)
+    trace_id = getattr(request.state, RequestStateKeys.TRACE_ID, None)
 
     body = ErrorResponse(
         error_code=exc.error_code,
@@ -25,15 +26,15 @@ async def business_exception_handler(
 
     return JSONResponse(
         status_code=exc.status_code,
-        content=body.model_dump(),
+        content=body.model_dump(mode="json"),
     )
 
 
-async def unhandled_exception_handler(
+def unhandled_exception_handler(
         request: Request,
         exc: Exception,
 ):
-    trace_id = getattr(request.state, "trace_id", None)
+    trace_id = getattr(request.state, RequestStateKeys.TRACE_ID, None)
 
     logger.exception("Unhandled exception", exc_info=exc)
 
@@ -45,5 +46,5 @@ async def unhandled_exception_handler(
 
     return JSONResponse(
         status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-        content=body.model_dump(),
+        content=body.model_dump(mode="json"),
     )

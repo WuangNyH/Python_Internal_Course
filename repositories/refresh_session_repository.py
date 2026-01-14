@@ -1,14 +1,12 @@
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime
 from typing import Final
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, or_
 from sqlalchemy.orm import Session
 
+from core.utils.datetime_utils import utcnow
 from models.refresh_session import RefreshSession
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 class RefreshSessionRepository:
@@ -19,7 +17,7 @@ class RefreshSessionRepository:
             self,
             db: Session,
             *,
-            user_id: int,
+            user_id: uuid.UUID,
             token_hash: str,
             expires_at: datetime,
             absolute_expires_at: datetime,
@@ -27,7 +25,7 @@ class RefreshSessionRepository:
             ip_address: str | None = None,
             now: datetime | None = None,
     ) -> RefreshSession:
-        now = now or _utcnow()
+        now = now or utcnow()
 
         session = RefreshSession(
             user_id=user_id,
@@ -60,7 +58,7 @@ class RefreshSessionRepository:
 
         for_update=True dùng cho flow refresh/rotate để tránh race-condition
         """
-        now = now or _utcnow()
+        now = now or utcnow()
 
         stmt = (
             select(RefreshSession)
@@ -96,7 +94,7 @@ class RefreshSessionRepository:
         Lưu ý: rotate theo kiểu "update-in-place" (1 row)
         Do token_hash unique, new_token_hash phải chưa tồn tại
         """
-        now = now or _utcnow()
+        now = now or utcnow()
 
         # Lock & validate session
         current = self.get_active_by_token_hash(
@@ -129,7 +127,7 @@ class RefreshSessionRepository:
         """
         Revoke 1 session theo token_hash
         """
-        now = now or _utcnow()
+        now = now or utcnow()
 
         session = self.get_active_by_token_hash(
             db,
@@ -149,14 +147,14 @@ class RefreshSessionRepository:
             self,
             db: Session,
             *,
-            user_id: int,
+            user_id: uuid.UUID,
             now: datetime | None = None,
     ) -> int:
         """
         Revoke tất cả session của 1 user (logout all devices)
         Return: số session bị revoke
         """
-        now = now or _utcnow()
+        now = now or utcnow()
 
         stmt = (
             select(RefreshSession)
@@ -189,12 +187,14 @@ class RefreshSessionRepository:
         Dọn dẹp session hết hạn (enterprise chạy cron/job)
         Return: số session bị xóa
         """
-        before = before or _utcnow()
+        before = before or utcnow()
 
         # Lấy danh sách id cần xóa
         id_stmt = select(RefreshSession.id).where(
-            (RefreshSession.expires_at <= before) |
-            (RefreshSession.absolute_expires_at <= before)
+            or_(
+                RefreshSession.expires_at <= before,
+                RefreshSession.absolute_expires_at <= before
+            )
         )
         ids = db.execute(id_stmt).scalars().all()
         if not ids:
